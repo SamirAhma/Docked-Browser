@@ -1,0 +1,1156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Docked Browser</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
+  <style>
+    :root {
+      --ink: #15202b;
+      --muted: #5a6b7a;
+      --line: rgba(21, 32, 43, 0.12);
+      --panel: rgba(255, 255, 255, 0.78);
+      --bg0: #e8eef4;
+      --bg1: #d5e4f0;
+      --accent: #0b7a75;
+      --accent-hover: #096660;
+      --warn: #b45309;
+      --danger: #b42318;
+      --ok: #15803d;
+      --shadow: 0 18px 50px rgba(21, 32, 43, 0.08);
+      --radius: 14px;
+      --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --mono: "JetBrains Mono", ui-monospace, monospace;
+    }
+
+    [x-cloak] { display: none !important; }
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      font-family: var(--font);
+      color: var(--ink);
+      background:
+        radial-gradient(1200px 600px at 12% -10%, #c9e7e4 0%, transparent 55%),
+        radial-gradient(900px 500px at 100% 0%, #c8d9ef 0%, transparent 50%),
+        linear-gradient(165deg, var(--bg0), var(--bg1));
+      background-attachment: fixed;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0.3;
+      background-image:
+        linear-gradient(rgba(21, 32, 43, 0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(21, 32, 43, 0.04) 1px, transparent 1px);
+      background-size: 28px 28px;
+      mask-image: radial-gradient(ellipse at center, black 35%, transparent 80%);
+    }
+
+    .wrap {
+      position: relative;
+      width: min(760px, calc(100% - 2rem));
+      margin: 0 auto;
+      padding: 2.25rem 0 3.5rem;
+      animation: rise 0.5s ease-out both;
+    }
+
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    header { margin-bottom: 1.35rem; }
+
+    .brand {
+      margin: 0;
+      font-size: clamp(2rem, 5vw, 2.75rem);
+      font-weight: 700;
+      letter-spacing: -0.035em;
+      line-height: 1.05;
+    }
+
+    .lede {
+      margin: 0.6rem 0 0;
+      color: var(--muted);
+      font-size: 1.05rem;
+      line-height: 1.5;
+      max-width: 40rem;
+    }
+
+    .promo {
+      margin: 1rem 0 0;
+      padding: 0.95rem 1.05rem;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.55);
+      max-width: 42rem;
+    }
+
+    .promo-tag {
+      margin: 0 0 0.65rem;
+      font-size: 0.78rem;
+      font-weight: 650;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+
+    .promo-grid {
+      display: grid;
+      gap: 0.85rem;
+    }
+
+    @media (min-width: 640px) {
+      .promo-grid {
+        grid-template-columns: repeat(3, 1fr);
+        gap: 1rem;
+      }
+    }
+
+    .promo-grid h3 {
+      margin: 0 0 0.35rem;
+      font-size: 0.88rem;
+      font-weight: 650;
+      letter-spacing: -0.01em;
+      color: var(--ink);
+    }
+
+    .promo-grid ul {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: 0.35rem;
+    }
+
+    .promo-grid li {
+      position: relative;
+      padding-left: 0.85rem;
+      font-size: 0.84rem;
+      line-height: 1.4;
+      color: var(--muted);
+    }
+
+    .promo-grid li::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0.55em;
+      width: 0.35rem;
+      height: 0.35rem;
+      border-radius: 50%;
+      background: var(--accent);
+      opacity: 0.7;
+    }
+
+    .promo-grid .weak li::before {
+      background: var(--warn);
+    }
+
+    .steps {
+      display: grid;
+      gap: 0.55rem;
+      margin: 1.1rem 0 0;
+      padding: 0;
+      list-style: none;
+      counter-reset: step;
+    }
+
+    .steps li {
+      counter-increment: step;
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 0.7rem;
+      align-items: start;
+      color: var(--ink);
+      font-size: 0.95rem;
+      line-height: 1.4;
+    }
+
+    .steps li::before {
+      content: counter(step);
+      width: 1.45rem;
+      height: 1.45rem;
+      border-radius: 999px;
+      background: var(--ink);
+      color: #fff;
+      font-size: 0.75rem;
+      font-weight: 700;
+      display: grid;
+      place-items: center;
+      margin-top: 0.1rem;
+    }
+
+    .steps strong { font-weight: 600; }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(10px);
+      padding: 1.2rem 1.25rem 1.3rem;
+    }
+
+    .panel + .panel { margin-top: 0.9rem; }
+
+    .panel-title {
+      margin: 0 0 0.35rem;
+      font-size: 1.15rem;
+      font-weight: 650;
+      letter-spacing: -0.02em;
+    }
+
+    .panel-sub {
+      margin: 0 0 1rem;
+      color: var(--muted);
+      font-size: 0.92rem;
+      line-height: 1.45;
+    }
+
+    .setup-banner {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.95rem 1rem;
+      border-radius: 12px;
+      background: #fff8e8;
+      border: 1px solid rgba(180, 83, 9, 0.22);
+      margin-bottom: 0.9rem;
+    }
+
+    .setup-banner p {
+      margin: 0;
+      font-size: 0.92rem;
+      line-height: 1.4;
+      color: #7a4510;
+      flex: 1 1 220px;
+    }
+
+    label {
+      display: block;
+      font-size: 0.88rem;
+      font-weight: 600;
+      margin-bottom: 0.4rem;
+    }
+
+    .field-note {
+      margin: 0.4rem 0 0;
+      font-size: 0.84rem;
+      color: var(--muted);
+      line-height: 1.4;
+    }
+
+    .open-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 0.55rem;
+      align-items: stretch;
+    }
+
+    input[type="text"] {
+      width: 100%;
+      padding: 0.8rem 0.95rem;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      font: inherit;
+      font-size: 1rem;
+      color: var(--ink);
+      outline: none;
+    }
+
+    input[type="text"]:focus {
+      border-color: rgba(11, 122, 117, 0.55);
+      box-shadow: 0 0 0 3px rgba(11, 122, 117, 0.15);
+    }
+
+    .examples {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+      margin-top: 0.75rem;
+      align-items: center;
+    }
+
+    .examples-label {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-right: 0.15rem;
+    }
+
+    .chip {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      border-radius: 999px;
+      padding: 0.28rem 0.7rem;
+      font: inherit;
+      font-size: 0.82rem;
+      cursor: pointer;
+    }
+
+    .chip:hover { background: #f0f7f6; }
+    .chip.active {
+      border-color: rgba(11, 122, 117, 0.45);
+      background: #e7f5f4;
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.55rem;
+      margin-top: 1rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--line);
+    }
+
+    .controls button { flex: 1 1 140px; }
+
+    button {
+      font: inherit;
+      font-weight: 600;
+      border: none;
+      border-radius: 10px;
+      padding: 0.8rem 1rem;
+      cursor: pointer;
+      transition: opacity 0.15s ease, transform 0.12s ease, background 0.15s ease;
+    }
+
+    button:active:not(:disabled) { transform: scale(0.98); }
+    button:disabled {
+      opacity: 0.38;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+    .btn-dark { background: var(--ink); color: #fff; }
+    .btn-pause {
+      background: #fff7ed;
+      color: var(--warn);
+      border: 1px solid rgba(180, 83, 9, 0.25);
+    }
+    .btn-resume {
+      background: #ecfdf3;
+      color: var(--ok);
+      border: 1px solid rgba(21, 128, 61, 0.22);
+    }
+    .btn-stop {
+      background: #fef3f2;
+      color: var(--danger);
+      border: 1px solid rgba(180, 35, 24, 0.22);
+    }
+    .btn-ghost {
+      background: #fff;
+      color: var(--ink);
+      border: 1px solid var(--line);
+      padding: 0.45rem 0.8rem;
+      font-size: 0.85rem;
+      flex: 0 0 auto;
+    }
+
+    .status-card {
+      margin-top: 1rem;
+      padding: 0.85rem 0.95rem;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.7);
+      border: 1px solid var(--line);
+    }
+
+    .icon-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.85rem;
+      align-items: center;
+      margin-top: 0.9rem;
+      padding-top: 0.9rem;
+      border-top: 1px solid var(--line);
+    }
+
+    .icon-preview {
+      width: 64px;
+      height: 64px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background:
+        linear-gradient(45deg, #eee 25%, transparent 25%),
+        linear-gradient(-45deg, #eee 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #eee 75%),
+        linear-gradient(-45deg, transparent 75%, #eee 75%);
+      background-size: 12px 12px;
+      background-position: 0 0, 0 6px, 6px -6px, -6px 0;
+      object-fit: cover;
+      flex-shrink: 0;
+    }
+
+    .icon-preview.placeholder {
+      display: grid;
+      place-items: center;
+      color: #fff;
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-align: center;
+      padding: 0.35rem;
+      line-height: 1.15;
+      word-break: break-word;
+      background: #0b7a75;
+      border-color: transparent;
+    }
+
+    .icon-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+      align-items: center;
+      flex: 1 1 180px;
+    }
+
+    .icon-actions input[type="file"] {
+      display: none;
+    }
+
+    .icon-info {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+    }
+
+    .icon-info-btn {
+      width: 1.65rem;
+      height: 1.65rem;
+      padding: 0;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.7);
+      color: var(--muted);
+      font: 600 0.8rem/1 var(--font);
+      cursor: pointer;
+      display: grid;
+      place-items: center;
+    }
+
+    .icon-info-btn:hover,
+    .icon-info-btn[aria-expanded="true"] {
+      color: var(--accent);
+      border-color: rgba(11, 122, 117, 0.35);
+      background: rgba(11, 122, 117, 0.08);
+    }
+
+    .icon-help {
+      display: none;
+      position: absolute;
+      left: 0;
+      top: calc(100% + 0.4rem);
+      z-index: 5;
+      width: min(18rem, 72vw);
+      margin: 0;
+      padding: 0.7rem 0.8rem;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.96);
+      box-shadow: var(--shadow);
+      font-size: 0.82rem;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    .icon-help.is-open {
+      display: block;
+    }
+
+    .status-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 0.75rem;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .status-name {
+      font-weight: 650;
+      font-size: 1rem;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      color: var(--muted);
+    }
+
+    .dot {
+      width: 0.5rem;
+      height: 0.5rem;
+      border-radius: 50%;
+      background: #94a3b8;
+      flex-shrink: 0;
+    }
+    .dot.on {
+      background: var(--ok);
+      box-shadow: 0 0 0 3px rgba(21, 128, 61, 0.18);
+    }
+    .dot.warn {
+      background: var(--warn);
+      box-shadow: 0 0 0 3px rgba(180, 83, 9, 0.18);
+    }
+
+    .status-explain {
+      margin: 0.45rem 0 0;
+      font-size: 0.88rem;
+      color: var(--muted);
+      line-height: 1.4;
+    }
+
+    .busy-line {
+      margin: 0.75rem 0 0;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 0.75rem;
+      margin-bottom: 0.35rem;
+    }
+
+    .toolbar .panel-title { margin: 0; }
+    .toolbar .panel-sub { margin: 0.25rem 0 0; }
+
+    .list {
+      display: grid;
+      gap: 0.65rem;
+      margin-top: 0.9rem;
+    }
+
+    .item {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 0.75rem;
+      align-items: center;
+      padding: 0.85rem 0.95rem;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+    }
+
+    .item-meta { min-width: 0; }
+    .item-title { font-weight: 650; margin: 0 0 0.25rem; }
+    .item-sub {
+      margin: 0;
+      font-size: 0.84rem;
+      color: var(--muted);
+    }
+
+    .item-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      justify-content: flex-end;
+    }
+
+    .item-actions button {
+      padding: 0.4rem 0.65rem;
+      font-size: 0.78rem;
+      flex: 0 0 auto;
+    }
+
+    .empty {
+      margin: 0.7rem 0 0;
+      color: var(--muted);
+      font-size: 0.95rem;
+      line-height: 1.45;
+    }
+
+    details.help {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      padding: 0.85rem 1rem;
+      margin-top: 0.9rem;
+    }
+
+    details.help summary {
+      cursor: pointer;
+      font-weight: 650;
+      list-style: none;
+    }
+
+    details.help summary::-webkit-details-marker { display: none; }
+
+    details.help summary::after {
+      content: "Show";
+      float: right;
+      font-weight: 500;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+
+    details.help[open] summary::after { content: "Hide"; }
+
+    .help-body {
+      margin-top: 0.85rem;
+      color: var(--muted);
+      font-size: 0.92rem;
+      line-height: 1.5;
+    }
+
+    .help-body dl {
+      margin: 0.75rem 0 0;
+      display: grid;
+      gap: 0.65rem;
+    }
+
+    .help-body dt { font-weight: 650; color: var(--ink); }
+    .help-body dd { margin: 0.15rem 0 0; }
+
+    pre.log {
+      margin: 0.75rem 0 0;
+      max-height: 160px;
+      overflow: auto;
+      padding: 0.85rem;
+      border-radius: 10px;
+      background: #101820;
+      color: #d7e2ea;
+      font-family: var(--mono);
+      font-size: 0.74rem;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    @media (max-width: 560px) {
+      .open-row { grid-template-columns: 1fr; }
+      .item { grid-template-columns: 1fr; }
+      .item-actions { justify-content: flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap" x-data="dockedApp()" x-cloak x-init="init()">
+    <header>
+      <h1 class="brand">Docked Browser</h1>
+      <p class="lede">
+        Chrome profiles with clearer cues — so you can focus on <em>one</em> job at a time.
+        Other people use it for clients, shopping, or experiments; you choose the names.
+      </p>
+      <div class="promo" aria-label="About Docked Browser">
+        <p class="promo-tag">What this is</p>
+        <div class="promo-grid">
+          <div>
+            <h3>Advantages</h3>
+            <ul>
+              <li>One named window per context — easier to stay focused</li>
+              <li>Custom dock icons so you pick the right Chrome</li>
+              <li>Pause a window without quitting</li>
+              <li>Doesn’t touch your normal host Chrome</li>
+            </ul>
+          </div>
+          <div>
+            <h3>Use cases</h3>
+            <ul>
+              <li>Focus: only open the window you need right now</li>
+              <li>Work / personal / shopping kept apart</li>
+              <li>Park a heavy session and come back later</li>
+              <li>Whatever split helps your brain — names are yours</li>
+            </ul>
+          </div>
+          <div>
+            <h3>Weaknesses</h3>
+            <ul class="weak">
+              <li>It’s profile separation — not a VPN or VM</li>
+              <li>Needs Docker + a Linux desktop</li>
+              <li>Pause keeps RAM; doesn’t free memory</li>
+              <li>Still shares your IP, machine, and Downloads</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <ol class="steps">
+        <li><span><strong>One-time setup:</strong> install Chrome inside Docker (button below if needed).</span></li>
+        <li><span><strong>Create a browser:</strong> type a name, then press <strong>Open Chrome</strong>.</span></li>
+        <li><span><strong>Manage it:</strong> Pause freezes it, Stop closes it completely.</span></li>
+      </ol>
+    </header>
+
+    <div class="setup-banner" x-show="!imageBuilt">
+      <p><strong>First-time setup needed.</strong> Click “Install Chrome” once. After that you can open as many named browsers as you like.</p>
+      <button type="button" class="btn-dark" @click="run('build')" :disabled="busy">
+        Install Chrome
+      </button>
+    </div>
+
+    <section class="panel">
+      <h2 class="panel-title">Open a Chrome</h2>
+      <p class="panel-sub">
+        Type any short name. If it doesn’t exist yet, this creates it.
+        Example names: <em>work</em>, <em>shopping</em>, <em>personal</em>.
+      </p>
+
+      <label for="profile">Name for this browser</label>
+      <div class="open-row">
+        <input
+          id="profile"
+          type="text"
+          x-model.trim="profile"
+          placeholder="e.g. work"
+          autocomplete="off"
+          :disabled="busy"
+          @keydown.enter.prevent="canRun && run('run')"
+        />
+        <button
+          type="button"
+          class="btn-primary"
+          x-show="canRun"
+          @click="run('run')"
+          :disabled="busy || !profile || !imageBuilt"
+          :title="!imageBuilt ? 'Install Chrome first' : 'Open a new Chrome window for this name'"
+        >Open Chrome</button>
+      </div>
+      <p class="field-note">
+        Letters, numbers, dash, and underscore only. Downloads save to your normal Downloads folder.
+      </p>
+
+      <div class="examples" x-show="profiles.length">
+        <span class="examples-label">Your browsers:</span>
+        <template x-for="name in profiles" :key="name">
+          <button
+            type="button"
+            class="chip"
+            :class="{ active: profile === name }"
+            @click="profile = name"
+            x-text="name"
+          ></button>
+        </template>
+      </div>
+
+      <div class="status-card" x-show="profile">
+        <div class="status-top">
+          <div class="status-name" x-text="profile || '—'"></div>
+          <span class="pill">
+            <span class="dot" :class="statusDotClass"></span>
+            <span x-text="selectedLabel"></span>
+          </span>
+        </div>
+        <p class="status-explain" x-text="actionHint"></p>
+
+        <div class="icon-row">
+          <template x-if="hasCustomIcon">
+            <img class="icon-preview" :src="iconUrl" :alt="profile + ' icon'" />
+          </template>
+          <template x-if="!hasCustomIcon">
+            <div class="icon-preview placeholder" x-text="profile || '…'"></div>
+          </template>
+          <div class="icon-actions">
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif"
+              x-ref="iconFile"
+              @change="onIconPicked($event)"
+            />
+            <button type="button" class="btn-ghost" @click="$refs.iconFile.click()" :disabled="busy || !profile">
+              Choose icon…
+            </button>
+            <button
+              type="button"
+              class="btn-ghost"
+              x-show="hasCustomIcon"
+              @click="clearIcon()"
+              :disabled="busy"
+            >Remove icon</button>
+            <div
+              class="icon-info"
+              x-data="{ open: false }"
+              @click.outside="open = false"
+              @keydown.escape.window="open = false"
+            >
+              <button
+                type="button"
+                class="icon-info-btn"
+                aria-label="Icon help"
+                :aria-expanded="open"
+                @click="open = !open"
+              >i</button>
+              <p class="icon-help" :class="{ 'is-open': open }" role="note">
+                Dock / taskbar icon for this browser. PNG works best (square, ~128×128 or larger).
+                After changing, Close + Open the profile (or unpin/re-pin) if the old icon sticks.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="controls" x-show="canPause || canResume || canStop || imageBuilt">
+          <button
+            type="button"
+            class="btn-pause"
+            x-show="canPause"
+            @click="run('pause')"
+            :disabled="busy"
+          >Pause (freeze)</button>
+
+          <button
+            type="button"
+            class="btn-resume"
+            x-show="canResume"
+            @click="run('resume')"
+            :disabled="busy"
+          >Resume</button>
+
+          <button
+            type="button"
+            class="btn-stop"
+            x-show="canStop"
+            @click="run('stop')"
+            :disabled="busy"
+          >Close Chrome</button>
+
+          <button
+            type="button"
+            class="btn-ghost"
+            x-show="imageBuilt"
+            @click="run('build')"
+            :disabled="busy"
+            title="Only needed if Chrome inside Docker must be updated"
+          >Update install</button>
+        </div>
+      </div>
+
+      <p class="busy-line" x-show="busy" x-text="busyText"></p>
+    </section>
+
+    <section class="panel">
+      <div class="toolbar">
+        <div>
+          <h2 class="panel-title">Currently open</h2>
+          <p class="panel-sub">Chrome windows started from this page.</p>
+        </div>
+        <button type="button" class="btn-ghost" @click="refresh()" :disabled="busy">Refresh</button>
+      </div>
+
+      <p class="empty" x-show="!containers.length">
+        Nothing open yet. Type a name above and press <strong>Open Chrome</strong>.
+      </p>
+
+      <div class="list" x-show="containers.length">
+        <template x-for="row in containers" :key="row.name">
+          <div class="item">
+            <div class="item-meta">
+              <p class="item-title" x-text="row.profile"></p>
+              <p class="item-sub">
+                <span class="pill" style="margin-right:0.5rem">
+                  <span class="dot" :class="row.paused ? 'warn' : (row.running ? 'on' : '')"></span>
+                  <span x-text="plainState(row)"></span>
+                </span>
+                <span x-text="plainUptime(row)"></span>
+              </p>
+            </div>
+            <div class="item-actions">
+              <button type="button" class="btn-ghost" @click="profile = row.profile">Select</button>
+              <button type="button" class="btn-pause" x-show="row.running" @click="run('pause', row.profile)" :disabled="busy">Pause</button>
+              <button type="button" class="btn-resume" x-show="row.paused" @click="run('resume', row.profile)" :disabled="busy">Resume</button>
+              <button type="button" class="btn-primary" x-show="!row.running && !row.paused" @click="run('run', row.profile)" :disabled="busy">Open</button>
+              <button type="button" class="btn-stop" @click="run('stop', row.profile)" :disabled="busy">Close</button>
+            </div>
+          </div>
+        </template>
+      </div>
+    </section>
+
+    <details class="help">
+      <summary>What do these buttons mean?</summary>
+      <div class="help-body">
+        <p>Think of each <strong>name</strong> as a separate Chrome app on your computer.</p>
+        <dl>
+          <div>
+            <dt>Open Chrome</dt>
+            <dd>Starts a browser for that name. If the name is new, a fresh profile is created automatically (new dock icon too).</dd>
+          </div>
+          <div>
+            <dt>Pause (freeze)</dt>
+            <dd>Keeps the window’s memory, but uses almost no CPU — like putting it to sleep. Use Resume (or the dock right‑click menu) to wake it. The dock icon itself stays the same — GNOME does not let us dim it reliably.</dd>
+          </div>
+          <div>
+            <dt>Resume</dt>
+            <dd>Wakes a paused browser back up.</dd>
+          </div>
+          <div>
+            <dt>Close Chrome</dt>
+            <dd>Fully quits that browser. Your bookmarks/logins for that name are kept for next time.</dd>
+          </div>
+          <div>
+            <dt>Choose icon</dt>
+            <dd>Pick a custom image for this browser’s dock/taskbar icon. Remove icon restores the letter badge.</dd>
+          </div>
+          <div>
+            <dt>Install / Update install</dt>
+            <dd>Downloads Google Chrome into Docker. Do this once at the start, or later to update.</dd>
+          </div>
+        </dl>
+        <pre class="log" x-text="log"></pre>
+      </div>
+    </details>
+  </div>
+
+  <script>
+    function dockedApp() {
+      return {
+        profile: "",
+        profiles: [],
+        containers: [],
+        icons: {},
+        iconTick: 0,
+        imageBuilt: false,
+        busy: false,
+        busyText: "Working…",
+        log: "Messages from the computer appear here when you click buttons.",
+        timer: null,
+
+        get selected() {
+          const name = (this.profile || "").trim();
+          return this.containers.find((c) => c.profile === name) || null;
+        },
+
+        get hasCustomIcon() {
+          const name = (this.profile || "").trim();
+          return !!(name && this.icons[name]);
+        },
+
+        get iconUrl() {
+          const name = (this.profile || "").trim();
+          if (!name || !this.icons[name]) return "";
+          return `/api/icon/${encodeURIComponent(name)}?t=${this.iconTick}`;
+        },
+
+        get selectedState() {
+          if (!this.selected) return "idle";
+          if (this.selected.paused) return "paused";
+          if (this.selected.running) return "running";
+          return "stopped";
+        },
+
+        get selectedLabel() {
+          return {
+            idle: "not open",
+            running: "open now",
+            paused: "paused (sleeping)",
+            stopped: "closed (leftover)",
+          }[this.selectedState];
+        },
+
+        get statusDotClass() {
+          if (this.selectedState === "running") return "on";
+          if (this.selectedState === "paused") return "warn";
+          return "";
+        },
+
+        get canRun() {
+          return this.selectedState === "idle" || this.selectedState === "stopped";
+        },
+
+        get canPause() {
+          return this.selectedState === "running";
+        },
+
+        get canResume() {
+          return this.selectedState === "paused";
+        },
+
+        get canStop() {
+          return this.selectedState === "running" || this.selectedState === "paused" || this.selectedState === "stopped";
+        },
+
+        get actionHint() {
+          if (!this.imageBuilt) return "Install Chrome first (yellow box above), then you can open this browser.";
+          if (!this.profile) return "Type a name above to create or reopen a browser.";
+          if (this.selectedState === "running") return "This Chrome is open on your desktop. Pause to sleep it, or Close to quit.";
+          if (this.selectedState === "paused") return "This Chrome is sleeping (almost no CPU). Resume to use it again, or Close to quit.";
+          if (this.selectedState === "stopped") return "It was closed awkwardly. Open again, or Close to clean up.";
+          return "Ready — press Open Chrome to create/start “" + this.profile + "”.";
+        },
+
+        plainState(row) {
+          if (row.paused) return "paused";
+          if (row.running) return "open";
+          return row.state || "closed";
+        },
+
+        plainUptime(row) {
+          const s = row.status || "";
+          if (s.startsWith("Up ")) return "Running for " + s.slice(3);
+          return s;
+        },
+
+        init() {
+          this.refresh().then(() => {
+            if (!this.profile) {
+              const running = this.containers.find((c) => c.running || c.paused);
+              this.profile = (running && running.profile) || this.profiles[0] || "default";
+            }
+          });
+          this.timer = setInterval(() => {
+            if (!this.busy) this.refresh(true);
+          }, 4000);
+        },
+
+        appendLog(text) {
+          const stamp = new Date().toLocaleTimeString();
+          this.log = `[${stamp}]\n${text}\n\n` + this.log;
+        },
+
+        applyStatus(data) {
+          this.imageBuilt = !!data.image_built;
+          this.containers = data.containers || [];
+          this.profiles = data.profiles || [];
+          this.icons = data.icons || {};
+          this.iconTick = Date.now();
+        },
+
+        async onIconPicked(event) {
+          const file = event.target.files && event.target.files[0];
+          event.target.value = "";
+          if (!file || !this.profile) return;
+          if (file.size > 2 * 1024 * 1024) {
+            this.appendLog("Icon too large — keep under 2 MB.");
+            return;
+          }
+          this.busy = true;
+          this.busyText = `Saving icon for “${this.profile}”…`;
+          try {
+            const dataUrl = await new Promise((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(reader.result);
+              reader.onerror = () => reject(reader.error || new Error("read failed"));
+              reader.readAsDataURL(file);
+            });
+            const res = await fetch("/api/icon", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ profile: this.profile, image: dataUrl }),
+            });
+            const data = await res.json();
+            this.appendLog((data.ok ? "Done" : "Something went wrong") + "\n" + (data.output || ""));
+            if (data.ok) this.applyStatus(data);
+            else await this.refresh(true);
+          } catch (err) {
+            this.appendLog("Icon upload failed: " + err);
+          } finally {
+            this.busy = false;
+          }
+        },
+
+        async clearIcon() {
+          if (!this.profile || this.busy) return;
+          this.busy = true;
+          this.busyText = `Removing icon for “${this.profile}”…`;
+          try {
+            const res = await fetch("/api/icon", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ profile: this.profile, action: "clear" }),
+            });
+            const data = await res.json();
+            this.appendLog((data.ok ? "Done" : "Something went wrong") + "\n" + (data.output || ""));
+            if (data.ok) this.applyStatus(data);
+          } catch (err) {
+            this.appendLog("Could not clear icon: " + err);
+          } finally {
+            this.busy = false;
+          }
+        },
+
+        async refresh(silent = false) {
+          try {
+            const res = await fetch("/api/status");
+            const data = await res.json();
+            this.applyStatus(data);
+          } catch (err) {
+            if (!silent) this.appendLog("Could not refresh status: " + err);
+          }
+        },
+
+        async run(action, profileOverride) {
+          if (this.busy) return;
+          const profile = (profileOverride || this.profile || "").trim();
+          if (action !== "build" && !profile) {
+            this.appendLog("Type a browser name first.");
+            return;
+          }
+
+          if (profileOverride) this.profile = profile;
+
+          const state = (() => {
+            const row = this.containers.find((c) => c.profile === profile);
+            if (!row) return "idle";
+            if (row.paused) return "paused";
+            if (row.running) return "running";
+            return "stopped";
+          })();
+
+          const allowed = {
+            build: true,
+            run: state === "idle" || state === "stopped",
+            pause: state === "running",
+            resume: state === "paused",
+            stop: state === "running" || state === "paused" || state === "stopped",
+          };
+          if (!allowed[action]) {
+            this.appendLog(`“${action}” isn’t available while this browser is ${state}.`);
+            return;
+          }
+
+          this.busy = true;
+          const labels = {
+            build: "Installing / updating Chrome… this can take a few minutes.",
+            run: `Opening Chrome “${profile}”…`,
+            pause: `Pausing “${profile}”…`,
+            resume: `Resuming “${profile}”…`,
+            stop: `Closing “${profile}”…`,
+          };
+          this.busyText = labels[action] || "Working…";
+          this.appendLog(this.busyText);
+
+          try {
+            const res = await fetch("/api/action", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ action, profile: profile || "default" }),
+            });
+            const data = await res.json();
+            this.appendLog((data.ok ? "Done" : "Something went wrong") + "\n" + (data.output || ""));
+            if (data.containers || data.profiles || typeof data.image_built === "boolean") {
+              this.applyStatus(data);
+            }
+            await this.refresh(true);
+          } catch (err) {
+            this.appendLog("Request failed: " + err);
+          } finally {
+            this.busy = false;
+          }
+        },
+      };
+    }
+  </script>
+</body>
+</html>

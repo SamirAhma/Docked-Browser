@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Write ~/.config/autostart/docked-browser.desktop for this checkout.
+# Paths are resolved on the local machine and are NOT stored in the repo.
+set -euo pipefail
+
+BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT_DIR="$(cd "$BIN_DIR/.." && pwd)"
+DEST_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
+DEST="$DEST_DIR/docked-browser.desktop"
+
+mkdir -p "$DEST_DIR"
+# Remove legacy autostart name if present
+rm -f "$DEST_DIR/chrome-cockpit.desktop"
+
+cat > "$DEST" <<EOF
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Docked Browser
+Comment=Start Docked Browser web UI on login
+Exec=$BIN_DIR/start-gui
+Path=$ROOT_DIR
+Terminal=false
+X-GNOME-Autostart-enabled=true
+StartupNotify=false
+Categories=Network;Utility;
+EOF
+
+echo "Installed autostart → $DEST"

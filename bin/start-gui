@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Launch Docked Browser GUI on DOCKED_BROWSER_PORT (default 8787).
+# Idempotent: if already serving, just print the URL and exit.
+set -euo pipefail
+
+BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT_DIR="$(cd "$BIN_DIR/.." && pwd)"
+GUI_DIR="$ROOT_DIR/gui"
+PORT="${DOCKED_BROWSER_PORT:-${COCKPIT_PORT:-8787}}"
+
+if curl -sf -o /dev/null "http://127.0.0.1:${PORT}/" 2>/dev/null; then
+  echo "Docked Browser already running → http://127.0.0.1:${PORT}"
+  exit 0
+fi
+
+# Free a stuck listener on our port, then start
+fuser -k "${PORT}/tcp" >/dev/null 2>&1 || true
+sleep 0.3
+
+export DISPLAY="${DISPLAY:-:0}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+if [[ -z "${WAYLAND_DISPLAY:-}" && -S "${XDG_RUNTIME_DIR}/wayland-0" ]]; then
+  export WAYLAND_DISPLAY=wayland-0
+fi
+
+cd "$GUI_DIR"
+exec env PYTHONUNBUFFERED=1 python3 "$GUI_DIR/server.py"

@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets / local env
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa*
+*.p12
+*.pfx
+credentials.json
+secrets.*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*~
+*.swp
+.idea/
+.vscode/
+.cursor/
+*.code-workspace
+
+# Local runtime leftovers (keep out of the repo)
+*.log
+tmp/
+temp/
+.cache/
+
+# Generated / machine-local (never commit)
+# Autostart with absolute paths lives in ~/.config/autostart/ — not here.
+# If someone copies a filled-in desktop file into the repo by mistake:
+chrome-cockpit.desktop
+docked-browser.desktop

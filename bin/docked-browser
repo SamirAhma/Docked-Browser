@@ -1,0 +1,429 @@
+#!/usr/bin/env bash
+# =============================================================================
+# docked-browser — CLI for Dockerized Google Chrome profiles
+# =============================================================================
+# Architecture (read AGENTS.md / README.md before changing behaviour):
+#
+#   GUI (gui/server.py) ──► this script ──► docker run/pause/… ──► Chrome container
+#                              │
+#                              └──► .desktop + PNG in ~/.local/share/…
+#
+# Repo layout: bin/ (this file) · gui/ (server + icons) · Dockerfile at root
+#
+# Commands: build | run | activate | pause | resume | stop | refresh-dock
+# Profile data: ~/.config/docker-chrome-profiles/<name>/   (unchanged on purpose)
+# Container:    chrome-<name>                              (unchanged on purpose)
+# Dock class:   docked-browser-<name>  (StartupWMClass / --class)
+# =============================================================================
+set -euo pipefail
+
+# --- Paths & naming ----------------------------------------------------------
+IMAGE_NAME="local-docked-browser"
+SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$PWD/docked-browser")"
+BIN_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+ROOT_DIR="$(cd "$BIN_DIR/.." && pwd)"          # repo root (Dockerfile lives here)
+GUI_DIR="$ROOT_DIR/gui"
+DOCK_ICON_PY="$GUI_DIR/dock_icon.py"
+DOWNLOADS_DIR="${HOME}/Downloads"
+DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+ICON_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/docked-browser/icons"
+
+# --- Profile context (set by set_profile) ------------------------------------
+PROFILE_NAME=""
+DATA_DIR=""
+CONTAINER_NAME=""
+APP_CLASS=""
+DESKTOP_FILE=""
+ICON_FILE=""
+
+usage() {
+  cat <<EOF
+Usage: $0 <command> [profile_name]
+
+Commands:
+  build                 Build the Docker image (${IMAGE_NAME})
+  run [name]            Start Chrome for a profile (default: default)
+  activate [name]       Dock click handler: resume / focus / or run
+  pause [name]          docker pause  (frozen in RAM, almost no CPU)
+  resume [name]         docker unpause
+  stop [name]           Remove the container
+  refresh-dock [name]   Rebuild .desktop + static dock icon
+
+Examples:
+  $0 build
+  $0 run work
+  $0 pause work
+EOF
+  exit 1
+}
+
+set_profile() {
+  PROFILE_NAME="${1:-default}"
+  # Keep names filesystem / docker / WMClass safe
+  if [[ ! "$PROFILE_NAME" =~ ^[a-zA-Z0-9_-]{1,64}$ ]]; then
+    echo "Invalid profile name: ${PROFILE_NAME}" >&2
+    echo "Use letters, numbers, _ or - (max 64)." >&2
+    exit 1
+  fi
+  DATA_DIR="${HOME}/.config/docker-chrome-profiles/${PROFILE_NAME}"
+  CONTAINER_NAME="chrome-${PROFILE_NAME}"
+  APP_CLASS="docked-browser-${PROFILE_NAME}"
+  DESKTOP_FILE="${DESKTOP_DIR}/${APP_CLASS}.desktop"
+  ICON_FILE="${ICON_DIR}/${APP_CLASS}.png"
+}
+
+# --- Desktop session env (GUI may start without a full login environment) ----
+ensure_session_env() {
+  export DISPLAY="${DISPLAY:-:0}"
+  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  if [[ -z "${WAYLAND_DISPLAY:-}" && -S "${XDG_RUNTIME_DIR}/wayland-0" ]]; then
+    export WAYLAND_DISPLAY=wayland-0
+  fi
+}
+
+allow_x11_for_docker() {
+  if command -v xhost >/dev/null 2>&1; then
+    xhost +local:docker >/dev/null 2>&1 || true
+    xhost +SI:localuser:"$(id -un)" >/dev/null 2>&1 || true
+  fi
+}
+
+# --- Container helpers -------------------------------------------------------
+container_status() {
+  docker inspect -f '{{.State.Status}}' "$CONTAINER_NAME" 2>/dev/null || true
+}
+
+container_is_paused() {
+  [[ "$(container_status)" == "paused" ]]
+}
+
+container_is_running() {
+  [[ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null || echo false)" == "true" ]]
+}
+
+notify() {
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send --app-name="Docked Browser" "$@" >/dev/null 2>&1 || true
+  fi
+}
+
+profile_color() {
+  # Stable hex from profile name (used for fallback name-badge icons)
+  local hash
+  hash="$(printf '%s' "$PROFILE_NAME" | md5sum | cut -c1-6)"
+  printf '#%s' "$hash"
+}
+
+# --- Dock / .desktop ---------------------------------------------------------
+# HARD RULES (do not re-introduce pause-dimming or hicolor absolute paths):
+#   • GNOME caches the window icon at open time → Icon= swaps won't update live windows
+#   • Absolute Icon= under ~/.local/share/icons/hicolor often shows blank
+#   • Never invent a partial hicolor/index.theme (breaks system icons)
+#   • Icons: ~/.local/share/docked-browser/icons/<class>.png (static only)
+install_dock_entry() {
+  mkdir -p "$DESKTOP_DIR" "$ICON_DIR" "$DATA_DIR"
+  local color title custom_icon
+  color="$(profile_color)"
+  title="Docked · ${PROFILE_NAME}"
+  custom_icon="${DATA_DIR}/dock-icon.png"
+
+  python3 "$DOCK_ICON_PY" "$PROFILE_NAME" "$color" "$custom_icon" "$ICON_FILE"
+
+  # Drop leftovers from older names / experiments
+  rm -f \
+    "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/128x128/apps/${APP_CLASS}"* \
+    "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/128x128/apps/chrome-cockpit-${PROFILE_NAME}"* \
+    "${DESKTOP_DIR}/chrome-cockpit-${PROFILE_NAME}.desktop" \
+    "${ICON_DIR}/${APP_CLASS}-paused.png" \
+    "${XDG_DATA_HOME:-$HOME/.local/share}/chrome-cockpit/icons/chrome-cockpit-${PROFILE_NAME}"* \
+    2>/dev/null || true
+
+  cat > "$DESKTOP_FILE" <<EOF
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=$title
+GenericName=Web Browser
+Comment=$title
+Exec=$SCRIPT_PATH activate $PROFILE_NAME
+Icon=$ICON_FILE
+Terminal=false
+Categories=Network;WebBrowser;
+StartupNotify=true
+StartupWMClass=$APP_CLASS
+Actions=Stop;Pause;Resume;
+
+[Desktop Action Stop]
+Name=Stop profile
+Exec=$SCRIPT_PATH stop $PROFILE_NAME
+
+[Desktop Action Pause]
+Name=Pause profile
+Exec=$SCRIPT_PATH pause $PROFILE_NAME
+
+[Desktop Action Resume]
+Name=Resume profile
+Exec=$SCRIPT_PATH resume $PROFILE_NAME
+EOF
+
+  touch "$DESKTOP_FILE"
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true
+  fi
+
+  echo "Dock entry: $title"
+  echo "Icon file: $ICON_FILE"
+}
+
+# --- Chrome profile prefs (fonts) --------------------------------------------
+seed_chrome_fonts() {
+  local prefs="${DATA_DIR}/Default/Preferences"
+  mkdir -p "${DATA_DIR}/Default"
+  python3 - "$prefs" <<'PY'
+import json, sys, pathlib
+path = pathlib.Path(sys.argv[1])
+data = {}
+if path.exists():
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+fonts = {
+    "standard": {"Zyyy": "Inter"},
+    "sansserif": {"Zyyy": "Inter"},
+    "serif": {"Zyyy": "Noto Serif"},
+    "fixed": {"Zyyy": "JetBrains Mono"},
+}
+webkit = data.setdefault("webkit", {})
+webprefs = webkit.setdefault("webprefs", {})
+webprefs["fonts"] = fonts
+browser = data.setdefault("browser", {})
+browser.setdefault("has_seen_welcome_page", True)
+path.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
+PY
+}
+
+# --- GPU: prefer NVIDIA Container Toolkit; else /dev/dri only ----------------
+append_nvidia_gpu_args() {
+  # Device nodes (harmless if toolkit also mounts them)
+  local d
+  for d in /dev/nvidia0 /dev/nvidiactl /dev/nvidia-modeset /dev/nvidia-uvm /dev/nvidia-uvm-tools; do
+    [[ -e "$d" ]] && run_args+=(--device "$d")
+  done
+
+  if docker info 2>/dev/null | grep -qiE 'Runtimes:.*nvidia|[[:space:]]nvidia'; then
+    echo "GPU: Docker NVIDIA runtime (--gpus all)"
+    run_args+=(--gpus all)
+    run_args+=(-e NVIDIA_VISIBLE_DEVICES=all)
+    run_args+=(-e NVIDIA_DRIVER_CAPABILITIES=all)
+    return
+  fi
+
+  echo "GPU: toolkit not installed — /dev/dri only (Mesa/software likely)."
+  echo "     Run: ./install-nvidia-toolkit.sh  (needs sudo in a real terminal)"
+}
+
+# --- Commands ----------------------------------------------------------------
+cmd_build() {
+  echo "Building Docked Browser image (${IMAGE_NAME})..."
+  docker build -t "$IMAGE_NAME" "$ROOT_DIR"
+  # Keep old tag working until people rebuild habits
+  docker tag "$IMAGE_NAME" local-chrome-cockpit 2>/dev/null || true
+}
+
+cmd_run() {
+  ensure_session_env
+  allow_x11_for_docker
+  mkdir -p "$DATA_DIR" "$DOWNLOADS_DIR" "${HOME}/.config/pulse"
+
+  if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
+    echo "No DISPLAY/WAYLAND_DISPLAY. Start from a desktop session so Chrome can open a window."
+    exit 1
+  fi
+
+  if docker inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
+    echo "Removing leftover container: $CONTAINER_NAME"
+    docker rm -f "$CONTAINER_NAME" >/dev/null
+  fi
+
+  install_dock_entry
+  seed_chrome_fonts
+
+  run_args=(
+    --name "$CONTAINER_NAME"
+    --net host
+    --device /dev/dri
+    --ipc=host
+    --shm-size=2g
+    --security-opt seccomp=unconfined
+    --security-opt apparmor=unconfined
+    -e "DISPLAY=$DISPLAY"
+    -e "HOME=/home/chromeuser"
+    -e "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
+    -v /tmp/.X11-unix:/tmp/.X11-unix:ro
+    -v "$DATA_DIR:/home/chromeuser/.config/google-chrome"
+    -v "$DOWNLOADS_DIR:/home/chromeuser/Downloads"
+    --user "$(id -u):$(id -g)"
+  )
+
+  chrome_flags=(
+    --no-first-run
+    --no-default-browser-check
+    --disable-dev-shm-usage
+    --no-sandbox
+    --password-store=basic
+    --start-maximized
+    --new-window
+    --class="$APP_CLASS"
+    --name="$APP_CLASS"
+    --font-render-hinting=none
+    --ignore-gpu-blocklist
+    --enable-gpu-rasterization
+    --enable-zero-copy
+    "about:blank"
+  )
+  feature_flags="AcceleratedVideoDecodeLinuxGL,AcceleratedVideoEncoder,CanvasOopRasterization"
+
+  if [[ -n "${WAYLAND_DISPLAY:-}" && -S "${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY}" ]]; then
+    echo "Using Wayland: $WAYLAND_DISPLAY"
+    run_args+=(-e "WAYLAND_DISPLAY=$WAYLAND_DISPLAY")
+    run_args+=(-v "${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY}:${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY}")
+    chrome_flags+=(--ozone-platform=wayland)
+    feature_flags="UseOzonePlatform,${feature_flags}"
+  else
+    echo "Using X11: $DISPLAY"
+    chrome_flags+=(--ozone-platform=x11)
+  fi
+  chrome_flags+=(--enable-features="$feature_flags")
+
+  if [[ -S "${XDG_RUNTIME_DIR}/bus" ]]; then
+    run_args+=(-e "DBUS_SESSION_BUS_ADDRESS=unix:path=${XDG_RUNTIME_DIR}/bus")
+    run_args+=(-v "${XDG_RUNTIME_DIR}/bus:${XDG_RUNTIME_DIR}/bus")
+  fi
+
+  append_nvidia_gpu_args
+
+  # --user drops supplementary groups; re-add GPU/audio GIDs
+  local g
+  for g in video render audio; do
+    if getent group "$g" >/dev/null 2>&1; then
+      run_args+=(--group-add "$(getent group "$g" | cut -d: -f3)")
+    fi
+  done
+
+  local pulse_sock="${XDG_RUNTIME_DIR}/pulse/native"
+  local pulse_cookie="${HOME}/.config/pulse/cookie"
+  if [[ -S "$pulse_sock" ]]; then
+    run_args+=(-e PULSE_SERVER="unix:${pulse_sock}")
+    run_args+=(-v "$pulse_sock:$pulse_sock")
+  fi
+  if [[ -f "$pulse_cookie" ]]; then
+    run_args+=(-v "$pulse_cookie:/home/chromeuser/.config/pulse/cookie:ro")
+  fi
+
+  if [[ -n "${XAUTHORITY:-}" && -f "${XAUTHORITY}" ]]; then
+    run_args+=(-e "XAUTHORITY=/home/chromeuser/.Xauthority")
+    run_args+=(-v "$XAUTHORITY:/home/chromeuser/.Xauthority:ro")
+  fi
+
+  echo "Launching profile: $PROFILE_NAME (dock class: $APP_CLASS)"
+  local image="$IMAGE_NAME"
+  if ! docker image inspect "$image" >/dev/null 2>&1; then
+    if docker image inspect local-chrome-cockpit >/dev/null 2>&1; then
+      image=local-chrome-cockpit
+      echo "Using legacy image tag: $image (run build to refresh as ${IMAGE_NAME})"
+    fi
+  fi
+  docker run -d "${run_args[@]}" "$image" "${chrome_flags[@]}"
+
+  sleep 1
+  if ! container_is_running; then
+    echo "Container failed to stay running. Logs:"
+    docker logs "$CONTAINER_NAME" 2>&1 || true
+    docker inspect -f 'Error={{.State.Error}} Exit={{.State.ExitCode}}' "$CONTAINER_NAME" 2>&1 || true
+    exit 1
+  fi
+  echo "Running: $CONTAINER_NAME"
+  install_dock_entry
+}
+
+cmd_activate() {
+  # Safer dock click: don't always destroy/recreate
+  ensure_session_env
+  if container_is_paused; then
+    notify "“${PROFILE_NAME}” is paused" "The browser is sleeping. Choose Resume to wake it."
+    if command -v zenity >/dev/null 2>&1; then
+        if zenity --question --title="Docked Browser" \
+        --text="“${PROFILE_NAME}” is paused (frozen).\n\nResume it now?" \
+        --ok-label="Resume" --cancel-label="Leave paused" 2>/dev/null; then
+        docker unpause "$CONTAINER_NAME"
+        notify "Resumed “${PROFILE_NAME}”"
+        echo "Resumed: $PROFILE_NAME"
+      else
+        echo "Left paused: $PROFILE_NAME"
+      fi
+    else
+      echo "Profile is paused. Run: $0 resume $PROFILE_NAME"
+      exit 1
+    fi
+  elif container_is_running; then
+    notify "“${PROFILE_NAME}” is already open" "Switch to its window from the dock or Alt+Tab."
+    echo "Already running: $PROFILE_NAME"
+  else
+    exec "$SCRIPT_PATH" run "$PROFILE_NAME"
+  fi
+}
+
+cmd_pause() {
+  echo "Pausing profile: $PROFILE_NAME (CPU ~0%, RAM kept)..."
+  docker pause "$CONTAINER_NAME"
+  notify "Paused “${PROFILE_NAME}”" "Frozen in RAM. Resume from Cockpit or the dock menu."
+}
+
+cmd_resume() {
+  echo "Resuming profile: $PROFILE_NAME..."
+  docker unpause "$CONTAINER_NAME"
+  notify "Resumed “${PROFILE_NAME}”"
+}
+
+cmd_stop() {
+  echo "Stopping container: $PROFILE_NAME..."
+  docker rm -f "$CONTAINER_NAME"
+  install_dock_entry
+}
+
+cmd_refresh_dock() {
+  install_dock_entry
+}
+
+# --- Dispatch ----------------------------------------------------------------
+main() {
+  local cmd="${1:-}"
+  [[ -n "$cmd" ]] || usage
+
+  case "$cmd" in
+    build)
+      cmd_build
+      ;;
+    run|activate|pause|resume|stop|refresh-dock)
+      set_profile "${2:-default}"
+      case "$cmd" in
+        run)           cmd_run ;;
+        activate)      cmd_activate ;;
+        pause)         cmd_pause ;;
+        resume)        cmd_resume ;;
+        stop)          cmd_stop ;;
+        refresh-dock)  cmd_refresh_dock ;;
+      esac
+      ;;
+    -h|--help|help)
+      usage
+      ;;
+    *)
+      echo "Unknown command: $cmd" >&2
+      usage
+      ;;
+  esac
+}
+
+main "$@"
