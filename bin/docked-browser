@@ -24,6 +24,7 @@ BIN_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 ROOT_DIR="$(cd "$BIN_DIR/.." && pwd)"          # repo root (Dockerfile lives here)
 GUI_DIR="$ROOT_DIR/gui"
 DOCK_ICON_PY="$GUI_DIR/dock_icon.py"
+BRAND_ICONS_PY="$GUI_DIR/brand_icons.py"
 FOCUS_MODAL="$BIN_DIR/focus-modal"
 DOWNLOADS_DIR="${HOME}/Downloads"
 DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
@@ -384,6 +385,10 @@ cmd_stop() {
 
 cmd_refresh_dock() {
   install_dock_entry
+  # Keep control-surface brand icons in sync (web / tray / modal)
+  if [[ -f "$BRAND_ICONS_PY" ]]; then
+    python3 "$BRAND_ICONS_PY" --icons-dir "$ICON_DIR" --no-static >/dev/null || true
+  fi
 }
 
 cmd_refresh_dock_all() {
@@ -402,6 +407,10 @@ cmd_refresh_dock_all() {
     name="${line#chrome-}"
     names+=("$name")
   done < <(docker ps -a --filter 'name=chrome-' --format '{{.Names}}' 2>/dev/null || true)
+
+  if [[ -f "$BRAND_ICONS_PY" ]]; then
+    python3 "$BRAND_ICONS_PY" --icons-dir "$ICON_DIR" --no-static || true
+  fi
 
   if ((${#names[@]} == 0)); then
     set_profile default

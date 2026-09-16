@@ -9,25 +9,89 @@
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <script>
+    // Apply saved theme before paint to avoid a light flash
+    (function () {
+      try {
+        var t = localStorage.getItem("docked-browser-theme");
+        if (t === "dark" || t === "light") {
+          document.documentElement.setAttribute("data-theme", t);
+        }
+      } catch (_) {}
+    })();
+  </script>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
   <style>
     :root {
-      --ink: #15202b;
-      --muted: #5a6b7a;
-      --line: rgba(21, 32, 43, 0.12);
-      --panel: rgba(255, 255, 255, 0.78);
-      --bg0: #e8eef4;
-      --bg1: #d5e4f0;
-      --accent: #0b7a75;
-      --accent-hover: #096660;
-      --warn: #b45309;
-      --danger: #b42318;
-      --ok: #15803d;
-      --shadow: 0 18px 50px rgba(21, 32, 43, 0.08);
-      --radius: 14px;
-      --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      --mono: "JetBrains Mono", ui-monospace, monospace;
+      --ink: #1d1d1f;
+      --muted: #86868b;
+      --line: rgba(0, 0, 0, 0.08);
+      --panel: #ffffff;
+      --bg: #f5f5f7;
+      --compose: #fafafa;
+      --row-hover: #fafafa;
+      --elevated: #ffffff;
+      --input-bg: #ffffff;
+      --placeholder: #c7c7cc;
+      --accent: #0071e3;
+      --accent-hover: #0077ed;
+      --warn: #ff9500;
+      --danger: #ff3b30;
+      --ok: #34c759;
+      --shadow: 0 2px 8px rgba(0, 0, 0, 0.04), 0 12px 40px rgba(0, 0, 0, 0.06);
+      --radius: 18px;
+      --radius-sm: 14px;
+      --font: "Manrope", "Avenir Next", "Segoe UI", sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, monospace;
+      --setup-bg: #fff8eb;
+      --setup-ink: #9a5b00;
+      --setup-line: rgba(255, 149, 0, 0.2);
+      --log-bg: #1d1d1f;
+      --log-ink: #f5f5f7;
+      --icon-ph: linear-gradient(160deg, #3a3a3c, #1d1d1f);
+      --btn-ghost: rgba(0, 0, 0, 0.05);
+      --btn-ghost-hover: rgba(0, 0, 0, 0.08);
+      --btn-pause-bg: rgba(255, 149, 0, 0.14);
+      --btn-pause-ink: #c77700;
+      --btn-resume-bg: rgba(52, 199, 89, 0.14);
+      --btn-resume-ink: #1f8f3c;
+      --btn-stop-bg: rgba(255, 59, 48, 0.12);
+      --btn-stop-ink: #d70015;
+    }
+
+    html[data-theme="dark"] {
+      --ink: #f5f5f7;
+      --muted: #98989d;
+      --line: rgba(255, 255, 255, 0.1);
+      --panel: #1c1c1e;
+      --bg: #000000;
+      --compose: #2c2c2e;
+      --row-hover: #2c2c2e;
+      --elevated: #2c2c2e;
+      --input-bg: #1c1c1e;
+      --placeholder: #636366;
+      --accent: #0a84ff;
+      --accent-hover: #409cff;
+      --warn: #ff9f0a;
+      --danger: #ff453a;
+      --ok: #30d158;
+      --shadow: 0 2px 8px rgba(0, 0, 0, 0.35), 0 12px 40px rgba(0, 0, 0, 0.45);
+      --setup-bg: #3a2e14;
+      --setup-ink: #ffd60a;
+      --setup-line: rgba(255, 214, 10, 0.25);
+      --log-bg: #000000;
+      --log-ink: #f5f5f7;
+      --icon-ph: linear-gradient(160deg, #636366, #3a3a3c);
+      --btn-ghost: rgba(255, 255, 255, 0.08);
+      --btn-ghost-hover: rgba(255, 255, 255, 0.14);
+      --btn-pause-bg: rgba(255, 159, 10, 0.18);
+      --btn-pause-ink: #ffd60a;
+      --btn-resume-bg: rgba(48, 209, 88, 0.18);
+      --btn-resume-ink: #30d158;
+      --btn-stop-bg: rgba(255, 69, 58, 0.18);
+      --btn-stop-ink: #ff6961;
+      color-scheme: dark;
     }
 
     [x-cloak] { display: none !important; }
@@ -38,33 +102,17 @@
       min-height: 100%;
       font-family: var(--font);
       color: var(--ink);
-      background:
-        radial-gradient(1200px 600px at 12% -10%, #c9e7e4 0%, transparent 55%),
-        radial-gradient(900px 500px at 100% 0%, #c8d9ef 0%, transparent 50%),
-        linear-gradient(165deg, var(--bg0), var(--bg1));
-      background-attachment: fixed;
+      background: var(--bg);
       -webkit-font-smoothing: antialiased;
-    }
-
-    body::before {
-      content: "";
-      position: fixed;
-      inset: 0;
-      pointer-events: none;
-      opacity: 0.3;
-      background-image:
-        linear-gradient(rgba(21, 32, 43, 0.04) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(21, 32, 43, 0.04) 1px, transparent 1px);
-      background-size: 28px 28px;
-      mask-image: radial-gradient(ellipse at center, black 35%, transparent 80%);
+      letter-spacing: -0.011em;
+      transition: background 0.2s ease, color 0.2s ease;
     }
 
     .wrap {
-      position: relative;
-      width: min(760px, calc(100% - 2rem));
+      width: min(640px, calc(100% - 2rem));
       margin: 0 auto;
-      padding: 2.25rem 0 3.5rem;
-      animation: rise 0.5s ease-out both;
+      padding: 2.75rem 0 3.5rem;
+      animation: rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
     }
 
     @keyframes rise {
@@ -72,153 +120,54 @@
       to { opacity: 1; transform: translateY(0); }
     }
 
-    header { margin-bottom: 1.35rem; }
+    header {
+      margin-bottom: 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 1rem;
+    }
+
+    .header-copy { min-width: 0; }
 
     .brand {
       margin: 0;
-      font-size: clamp(2rem, 5vw, 2.75rem);
-      font-weight: 700;
-      letter-spacing: -0.035em;
+      font-size: clamp(1.85rem, 4vw, 2.35rem);
+      font-weight: 800;
+      letter-spacing: -0.045em;
       line-height: 1.05;
     }
 
     .lede {
-      margin: 0.6rem 0 0;
+      margin: 0.4rem 0 0;
       color: var(--muted);
-      font-size: 1.05rem;
-      line-height: 1.5;
-      max-width: 40rem;
+      font-size: 1.02rem;
+      font-weight: 500;
     }
 
-    .promo {
-      margin: 1rem 0 0;
-      padding: 0.95rem 1.05rem;
-      border-radius: 12px;
+    .theme-toggle {
+      flex-shrink: 0;
+      display: inline-flex;
+      gap: 0.2rem;
+      padding: 0.2rem;
+      border-radius: 980px;
+      background: var(--btn-ghost);
       border: 1px solid var(--line);
-      background: rgba(255, 255, 255, 0.55);
-      max-width: 42rem;
     }
 
-    .promo-tag {
-      margin: 0 0 0.65rem;
+    .theme-toggle button {
+      padding: 0.4rem 0.75rem;
       font-size: 0.78rem;
       font-weight: 650;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-      color: var(--accent);
-    }
-
-    .promo-grid {
-      display: grid;
-      gap: 0.85rem;
-    }
-
-    @media (min-width: 640px) {
-      .promo-grid {
-        grid-template-columns: repeat(3, 1fr);
-        gap: 1rem;
-      }
-    }
-
-    .promo-grid h3 {
-      margin: 0 0 0.35rem;
-      font-size: 0.88rem;
-      font-weight: 650;
-      letter-spacing: -0.01em;
-      color: var(--ink);
-    }
-
-    .promo-grid ul {
-      margin: 0;
-      padding: 0;
-      list-style: none;
-      display: grid;
-      gap: 0.35rem;
-    }
-
-    .promo-grid li {
-      position: relative;
-      padding-left: 0.85rem;
-      font-size: 0.84rem;
-      line-height: 1.4;
+      background: transparent;
       color: var(--muted);
+      min-width: 3.4rem;
     }
 
-    .promo-grid li::before {
-      content: "";
-      position: absolute;
-      left: 0;
-      top: 0.55em;
-      width: 0.35rem;
-      height: 0.35rem;
-      border-radius: 50%;
-      background: var(--accent);
-      opacity: 0.7;
-    }
-
-    .promo-grid .weak li::before {
-      background: var(--warn);
-    }
-
-    .steps {
-      display: grid;
-      gap: 0.55rem;
-      margin: 1.1rem 0 0;
-      padding: 0;
-      list-style: none;
-      counter-reset: step;
-    }
-
-    .steps li {
-      counter-increment: step;
-      display: grid;
-      grid-template-columns: auto 1fr;
-      gap: 0.7rem;
-      align-items: start;
+    .theme-toggle button.is-on {
+      background: var(--elevated);
       color: var(--ink);
-      font-size: 0.95rem;
-      line-height: 1.4;
-    }
-
-    .steps li::before {
-      content: counter(step);
-      width: 1.45rem;
-      height: 1.45rem;
-      border-radius: 999px;
-      background: var(--ink);
-      color: #fff;
-      font-size: 0.75rem;
-      font-weight: 700;
-      display: grid;
-      place-items: center;
-      margin-top: 0.1rem;
-    }
-
-    .steps strong { font-weight: 600; }
-
-    .panel {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-      backdrop-filter: blur(10px);
-      padding: 1.2rem 1.25rem 1.3rem;
-    }
-
-    .panel + .panel { margin-top: 0.9rem; }
-
-    .panel-title {
-      margin: 0 0 0.35rem;
-      font-size: 1.15rem;
-      font-weight: 650;
-      letter-spacing: -0.02em;
-    }
-
-    .panel-sub {
-      margin: 0 0 1rem;
-      color: var(--muted);
-      font-size: 0.92rem;
-      line-height: 1.45;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
     }
 
     .setup-banner {
@@ -227,687 +176,612 @@
       gap: 0.75rem;
       align-items: center;
       justify-content: space-between;
-      padding: 0.95rem 1rem;
-      border-radius: 12px;
-      background: #fff8e8;
-      border: 1px solid rgba(180, 83, 9, 0.22);
-      margin-bottom: 0.9rem;
+      padding: 0.9rem 1.05rem;
+      margin-bottom: 1rem;
+      border-radius: var(--radius);
+      background: var(--setup-bg);
+      border: 1px solid var(--setup-line);
     }
 
     .setup-banner p {
       margin: 0;
-      font-size: 0.92rem;
-      line-height: 1.4;
-      color: #7a4510;
-      flex: 1 1 220px;
+      color: var(--setup-ink);
+      font-weight: 500;
+      font-size: 0.95rem;
+      flex: 1 1 160px;
     }
 
-    label {
-      display: block;
-      font-size: 0.88rem;
-      font-weight: 600;
-      margin-bottom: 0.4rem;
+    .shell {
+      background: var(--panel);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      border: 1px solid var(--line);
+      overflow: hidden;
     }
 
-    .field-note {
-      margin: 0.4rem 0 0;
-      font-size: 0.84rem;
-      color: var(--muted);
-      line-height: 1.4;
-    }
-
-    .open-row {
+    .compose {
       display: grid;
       grid-template-columns: 1fr auto;
-      gap: 0.55rem;
-      align-items: stretch;
+      gap: 0.5rem;
+      padding: 1.1rem 1.15rem;
+      border-bottom: 1px solid var(--line);
+      background: var(--compose);
     }
 
     input[type="text"] {
       width: 100%;
-      padding: 0.8rem 0.95rem;
+      padding: 0.85rem 1rem;
       border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #fff;
+      border-radius: 980px;
+      background: var(--input-bg);
       font: inherit;
-      font-size: 1rem;
+      font-size: 1.02rem;
+      font-weight: 500;
       color: var(--ink);
       outline: none;
     }
 
+    input[type="text"]::placeholder { color: var(--placeholder); }
     input[type="text"]:focus {
-      border-color: rgba(11, 122, 117, 0.55);
-      box-shadow: 0 0 0 3px rgba(11, 122, 117, 0.15);
+      border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
     }
-
-    .examples {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.4rem;
-      margin-top: 0.75rem;
-      align-items: center;
-    }
-
-    .examples-label {
-      font-size: 0.8rem;
-      color: var(--muted);
-      margin-right: 0.15rem;
-    }
-
-    .chip {
-      border: 1px solid var(--line);
-      background: #fff;
-      color: var(--ink);
-      border-radius: 999px;
-      padding: 0.28rem 0.7rem;
-      font: inherit;
-      font-size: 0.82rem;
-      cursor: pointer;
-    }
-
-    .chip:hover { background: #f0f7f6; }
-    .chip.active {
-      border-color: rgba(11, 122, 117, 0.45);
-      background: #e7f5f4;
-      color: var(--accent);
-      font-weight: 600;
-    }
-
-    .controls {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.55rem;
-      margin-top: 1rem;
-      padding-top: 1rem;
-      border-top: 1px solid var(--line);
-    }
-
-    .controls button { flex: 1 1 140px; }
 
     button {
       font: inherit;
-      font-weight: 600;
+      font-weight: 650;
       border: none;
-      border-radius: 10px;
-      padding: 0.8rem 1rem;
+      border-radius: 980px;
+      padding: 0.85rem 1.15rem;
       cursor: pointer;
+      letter-spacing: -0.01em;
       transition: opacity 0.15s ease, transform 0.12s ease, background 0.15s ease;
     }
 
     button:active:not(:disabled) { transform: scale(0.98); }
     button:disabled {
-      opacity: 0.38;
+      opacity: 0.35;
       cursor: not-allowed;
       transform: none;
     }
 
     .btn-primary { background: var(--accent); color: #fff; }
     .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
-    .btn-dark { background: var(--ink); color: #fff; }
-    .btn-pause {
-      background: #fff7ed;
-      color: var(--warn);
-      border: 1px solid rgba(180, 83, 9, 0.25);
-    }
-    .btn-resume {
-      background: #ecfdf3;
-      color: var(--ok);
-      border: 1px solid rgba(21, 128, 61, 0.22);
-    }
-    .btn-stop {
-      background: #fef3f2;
-      color: var(--danger);
-      border: 1px solid rgba(180, 35, 24, 0.22);
-    }
+    .btn-dark { background: var(--ink); color: var(--bg); }
+    .btn-pause { background: var(--btn-pause-bg); color: var(--btn-pause-ink); }
+    .btn-resume { background: var(--btn-resume-bg); color: var(--btn-resume-ink); }
+    .btn-stop { background: var(--btn-stop-bg); color: var(--btn-stop-ink); }
     .btn-ghost {
-      background: #fff;
+      background: var(--btn-ghost);
       color: var(--ink);
-      border: 1px solid var(--line);
       padding: 0.45rem 0.8rem;
-      font-size: 0.85rem;
-      flex: 0 0 auto;
+      font-size: 0.82rem;
     }
+    .btn-ghost:hover:not(:disabled) { background: var(--btn-ghost-hover); }
 
-    .status-card {
-      margin-top: 1rem;
-      padding: 0.85rem 0.95rem;
-      border-radius: 12px;
-      background: rgba(255, 255, 255, 0.7);
-      border: 1px solid var(--line);
-    }
-
-    .icon-row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.85rem;
-      align-items: center;
-      margin-top: 0.9rem;
-      padding-top: 0.9rem;
-      border-top: 1px solid var(--line);
-    }
-
-    .icon-preview {
-      width: 64px;
-      height: 64px;
-      border-radius: 14px;
-      border: 1px solid var(--line);
-      background:
-        linear-gradient(45deg, #eee 25%, transparent 25%),
-        linear-gradient(-45deg, #eee 25%, transparent 25%),
-        linear-gradient(45deg, transparent 75%, #eee 75%),
-        linear-gradient(-45deg, transparent 75%, #eee 75%);
-      background-size: 12px 12px;
-      background-position: 0 0, 0 6px, 6px -6px, -6px 0;
-      object-fit: cover;
-      flex-shrink: 0;
-    }
-
-    .icon-preview.placeholder {
-      display: grid;
-      place-items: center;
-      color: #fff;
+    .group-label {
+      margin: 0;
+      padding: 0.7rem 1.15rem 0.35rem;
       font-size: 0.72rem;
       font-weight: 700;
-      text-align: center;
-      padding: 0.35rem;
-      line-height: 1.15;
-      word-break: break-word;
-      background: #0b7a75;
-      border-color: transparent;
-    }
-
-    .icon-actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.4rem;
-      align-items: center;
-      flex: 1 1 180px;
-    }
-
-    .icon-actions input[type="file"] {
-      display: none;
-    }
-
-    .icon-info {
-      position: relative;
-      display: inline-flex;
-      align-items: center;
-    }
-
-    .icon-info-btn {
-      width: 1.65rem;
-      height: 1.65rem;
-      padding: 0;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-      background: rgba(255, 255, 255, 0.7);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
       color: var(--muted);
-      font: 600 0.8rem/1 var(--font);
+    }
+
+    .group-label + .group-label { padding-top: 1rem; }
+
+    .empty {
+      margin: 0;
+      padding: 1.4rem 1.15rem 1.6rem;
+      color: var(--muted);
+      font-weight: 500;
+      font-size: 0.95rem;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 0.85rem;
+      align-items: center;
+      padding: 0.85rem 1.15rem;
+      border-top: 1px solid var(--line);
       cursor: pointer;
+      transition: background 0.15s ease;
+    }
+
+    .row:first-of-type,
+    .group-label + .row { border-top: none; }
+    .row:hover { background: var(--row-hover); }
+    .row.is-live { background: var(--elevated); }
+    .row.is-live:hover { background: var(--row-hover); }
+
+    .icon-wrap {
+      position: relative;
+      width: 44px;
+      height: 44px;
+    }
+
+    .icon-btn {
+      padding: 0;
+      border: none;
+      background: transparent;
+      border-radius: 12px;
+      cursor: pointer;
+    }
+
+    .icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 11px;
+      object-fit: cover;
       display: grid;
       place-items: center;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
     }
 
-    .icon-info-btn:hover,
-    .icon-info-btn[aria-expanded="true"] {
-      color: var(--accent);
-      border-color: rgba(11, 122, 117, 0.35);
-      background: rgba(11, 122, 117, 0.08);
+    .icon.ph {
+      color: #fff;
+      font-size: 0.7rem;
+      font-weight: 700;
+      background: var(--icon-ph);
     }
 
-    .icon-help {
+    .icon-clear {
       display: none;
       position: absolute;
-      left: 0;
-      top: calc(100% + 0.4rem);
-      z-index: 5;
-      width: min(18rem, 72vw);
-      margin: 0;
-      padding: 0.7rem 0.8rem;
-      border-radius: 10px;
-      border: 1px solid var(--line);
-      background: rgba(255, 255, 255, 0.96);
-      box-shadow: var(--shadow);
-      font-size: 0.82rem;
-      color: var(--muted);
-      line-height: 1.45;
-    }
-
-    .icon-help.is-open {
-      display: block;
-    }
-
-    .status-top {
-      display: flex;
-      justify-content: space-between;
-      gap: 0.75rem;
+      top: -5px;
+      right: -5px;
+      width: 1.15rem;
+      height: 1.15rem;
+      padding: 0;
+      border: none;
+      border-radius: 999px;
+      background: var(--ink);
+      color: var(--bg);
+      font-size: 0.7rem;
+      line-height: 1;
       align-items: center;
-      flex-wrap: wrap;
+      justify-content: center;
+      cursor: pointer;
     }
 
-    .status-name {
-      font-weight: 650;
-      font-size: 1rem;
+    .row:hover .icon-clear.is-on,
+    .row.is-sel .icon-clear.is-on { display: inline-flex; }
+
+    .meta { min-width: 0; }
+    .name {
+      margin: 0;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      font-size: 1.02rem;
+    }
+
+    .sub {
+      margin: 0.2rem 0 0;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem 0.65rem;
+      align-items: center;
+      color: var(--muted);
+      font-size: 0.84rem;
+      font-weight: 500;
     }
 
     .pill {
       display: inline-flex;
       align-items: center;
-      gap: 0.4rem;
-      font-family: var(--mono);
-      font-size: 0.78rem;
-      color: var(--muted);
+      gap: 0.35rem;
     }
 
     .dot {
-      width: 0.5rem;
-      height: 0.5rem;
+      width: 0.42rem;
+      height: 0.42rem;
       border-radius: 50%;
-      background: #94a3b8;
+      background: var(--placeholder);
       flex-shrink: 0;
     }
-    .dot.on {
-      background: var(--ok);
-      box-shadow: 0 0 0 3px rgba(21, 128, 61, 0.18);
-    }
-    .dot.warn {
-      background: var(--warn);
-      box-shadow: 0 0 0 3px rgba(180, 83, 9, 0.18);
-    }
+    .dot.on { background: var(--ok); }
+    .dot.warn { background: var(--warn); }
 
-    .status-explain {
-      margin: 0.45rem 0 0;
-      font-size: 0.88rem;
+    .res {
+      font-family: var(--mono);
+      font-size: 0.72rem;
       color: var(--muted);
-      line-height: 1.4;
+      font-weight: 500;
+      letter-spacing: -0.02em;
     }
 
-    .busy-line {
-      margin: 0.75rem 0 0;
-      color: var(--muted);
-      font-size: 0.9rem;
-    }
-
-    .toolbar {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      gap: 0.75rem;
-      margin-bottom: 0.35rem;
-    }
-
-    .toolbar .panel-title { margin: 0; }
-    .toolbar .panel-sub { margin: 0.25rem 0 0; }
-
-    .list {
-      display: grid;
-      gap: 0.65rem;
-      margin-top: 0.9rem;
-    }
-
-    .item {
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 0.75rem;
-      align-items: center;
-      padding: 0.85rem 0.95rem;
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      background: #fff;
-    }
-
-    .item-meta { min-width: 0; }
-    .item-title { font-weight: 650; margin: 0 0 0.25rem; }
-    .item-sub {
-      margin: 0;
-      font-size: 0.84rem;
-      color: var(--muted);
-    }
-
-    .item-actions {
+    .actions {
       display: flex;
       flex-wrap: wrap;
       gap: 0.35rem;
       justify-content: flex-end;
     }
 
-    .item-actions button {
-      padding: 0.4rem 0.65rem;
-      font-size: 0.78rem;
-      flex: 0 0 auto;
+    .actions button {
+      padding: 0.45rem 0.85rem;
+      font-size: 0.82rem;
     }
 
-    .empty {
-      margin: 0.7rem 0 0;
+    .busy {
+      margin: 0;
+      padding: 0.75rem 1.15rem 1rem;
+      border-top: 1px solid var(--line);
       color: var(--muted);
-      font-size: 0.95rem;
-      line-height: 1.45;
+      font-size: 0.9rem;
+      font-weight: 500;
     }
 
-    details.help {
-      border: 1px solid var(--line);
+    .foot {
+      margin-top: 0.85rem;
       border-radius: var(--radius);
+      border: 1px solid var(--line);
       background: var(--panel);
-      padding: 0.85rem 1rem;
-      margin-top: 0.9rem;
+      box-shadow: var(--shadow);
+      padding: 0.85rem 1.1rem;
     }
 
-    details.help summary {
+    .foot summary {
       cursor: pointer;
-      font-weight: 650;
+      font-weight: 700;
+      letter-spacing: -0.02em;
       list-style: none;
     }
 
-    details.help summary::-webkit-details-marker { display: none; }
-
-    details.help summary::after {
+    .foot summary::-webkit-details-marker { display: none; }
+    .foot summary::after {
       content: "Show";
       float: right;
-      font-weight: 500;
-      color: var(--muted);
-      font-size: 0.85rem;
+      color: var(--accent);
+      font-weight: 600;
+      font-size: 0.88rem;
     }
+    .foot[open] summary::after { content: "Hide"; }
 
-    details.help[open] summary::after { content: "Hide"; }
-
-    .help-body {
-      margin-top: 0.85rem;
+    .help {
+      margin-top: 0.9rem;
       color: var(--muted);
       font-size: 0.92rem;
       line-height: 1.5;
+      font-weight: 500;
     }
 
-    .help-body dl {
-      margin: 0.75rem 0 0;
+    .help dl {
+      margin: 0.85rem 0 0;
       display: grid;
       gap: 0.65rem;
     }
 
-    .help-body dt { font-weight: 650; color: var(--ink); }
-    .help-body dd { margin: 0.15rem 0 0; }
+    .help dt { font-weight: 700; color: var(--ink); }
+    .help dd { margin: 0.15rem 0 0; }
+
+    .help-grid {
+      display: grid;
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+
+    @media (min-width: 560px) {
+      .help-grid { grid-template-columns: repeat(3, 1fr); }
+    }
+
+    .help-grid h3 {
+      margin: 0 0 0.35rem;
+      font-size: 0.88rem;
+      color: var(--ink);
+    }
+
+    .help-grid ul {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: 0.3rem;
+    }
+
+    .help-grid li {
+      position: relative;
+      padding-left: 0.8rem;
+      font-size: 0.82rem;
+    }
+
+    .help-grid li::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0.5em;
+      width: 0.28rem;
+      height: 0.28rem;
+      border-radius: 50%;
+      background: var(--accent);
+    }
+
+    .help-grid .weak li::before { background: var(--warn); }
 
     pre.log {
-      margin: 0.75rem 0 0;
-      max-height: 160px;
+      margin: 0.85rem 0 0;
+      max-height: 140px;
       overflow: auto;
-      padding: 0.85rem;
-      border-radius: 10px;
-      background: #101820;
-      color: #d7e2ea;
+      padding: 0.85rem 0.95rem;
+      border-radius: var(--radius-sm);
+      background: var(--log-bg);
+      color: var(--log-ink);
       font-family: var(--mono);
-      font-size: 0.74rem;
-      line-height: 1.5;
+      font-size: 0.72rem;
+      line-height: 1.45;
       white-space: pre-wrap;
       word-break: break-word;
     }
 
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      border: 0;
+    }
+
     @media (max-width: 560px) {
-      .open-row { grid-template-columns: 1fr; }
-      .item { grid-template-columns: 1fr; }
-      .item-actions { justify-content: flex-start; }
+      .compose { grid-template-columns: 1fr; }
+      .row { grid-template-columns: auto 1fr; }
+      .actions { grid-column: 1 / -1; justify-content: flex-start; }
     }
   </style>
 </head>
 <body>
   <div class="wrap" x-data="dockedApp()" x-cloak x-init="init()">
     <header>
-      <h1 class="brand">Docked Browser</h1>
-      <p class="lede">
-        Chrome profiles with clearer cues — so you can focus on <em>one</em> job at a time.
-        Other people use it for clients, shopping, or experiments; you choose the names.
-      </p>
-      <div class="promo" aria-label="About Docked Browser">
-        <p class="promo-tag">What this is</p>
-        <div class="promo-grid">
-          <div>
-            <h3>Advantages</h3>
-            <ul>
-              <li>One named window per context — easier to stay focused</li>
-              <li>Custom dock icons so you pick the right Chrome</li>
-              <li>Pause a window without quitting</li>
-              <li>Doesn’t touch your normal host Chrome</li>
-            </ul>
-          </div>
-          <div>
-            <h3>Use cases</h3>
-            <ul>
-              <li>Focus: only open the window you need right now</li>
-              <li>Work / personal / shopping kept apart</li>
-              <li>Park a heavy session and come back later</li>
-              <li>Whatever split helps your brain — names are yours</li>
-            </ul>
-          </div>
-          <div>
-            <h3>Weaknesses</h3>
-            <ul class="weak">
-              <li>It’s profile separation — not a VPN or VM</li>
-              <li>Needs Docker + a Linux desktop</li>
-              <li>Pause keeps RAM; doesn’t free memory</li>
-              <li>Still shares your IP, machine, and Downloads</li>
-            </ul>
-          </div>
-        </div>
+      <div class="header-copy">
+        <h1 class="brand">Docked Browser</h1>
+        <p class="lede">One Chrome per name. Pause what you’re not using.</p>
       </div>
-      <ol class="steps">
-        <li><span><strong>One-time setup:</strong> install Chrome inside Docker (button below if needed).</span></li>
-        <li><span><strong>Create a browser:</strong> type a name, then press <strong>Open Chrome</strong>.</span></li>
-        <li><span><strong>Manage it:</strong> Pause freezes it, Stop closes it completely.</span></li>
-      </ol>
+      <div class="theme-toggle" role="group" aria-label="Appearance">
+        <button
+          type="button"
+          :class="{ 'is-on': theme === 'light' }"
+          @click="setTheme('light')"
+        >Light</button>
+        <button
+          type="button"
+          :class="{ 'is-on': theme === 'dark' }"
+          @click="setTheme('dark')"
+        >Dark</button>
+      </div>
     </header>
 
     <div class="setup-banner" x-show="!imageBuilt">
-      <p><strong>First-time setup needed.</strong> Click “Install Chrome” once. After that you can open as many named browsers as you like.</p>
-      <button type="button" class="btn-dark" @click="run('build')" :disabled="busy">
-        Install Chrome
-      </button>
+      <p>Install Chrome once to get started.</p>
+      <button type="button" class="btn-dark" @click="run('build')" :disabled="busy">Install</button>
     </div>
 
-    <section class="panel">
-      <h2 class="panel-title">Open a Chrome</h2>
-      <p class="panel-sub">
-        Type any short name. If it doesn’t exist yet, this creates it.
-        Example names: <em>work</em>, <em>shopping</em>, <em>personal</em>.
-      </p>
-
-      <label for="profile">Name for this browser</label>
-      <div class="open-row">
+    <div class="shell">
+      <div class="compose">
         <input
           id="profile"
           type="text"
           x-model.trim="profile"
-          placeholder="e.g. work"
+          placeholder="New name…"
+          aria-label="Browser name"
           autocomplete="off"
+          pattern="[a-zA-Z0-9_-]*"
+          title="Letters, numbers, dash, underscore"
           :disabled="busy"
-          @keydown.enter.prevent="canRun && run('run')"
+          @keydown.enter.prevent="canOpenTyped && run('run')"
         />
         <button
           type="button"
           class="btn-primary"
-          x-show="canRun"
           @click="run('run')"
-          :disabled="busy || !profile || !imageBuilt"
-          :title="!imageBuilt ? 'Install Chrome first' : 'Open a new Chrome window for this name'"
-        >Open Chrome</button>
-      </div>
-      <p class="field-note">
-        Letters, numbers, dash, and underscore only. Downloads save to your normal Downloads folder.
-      </p>
-
-      <div class="examples" x-show="profiles.length">
-        <span class="examples-label">Your browsers:</span>
-        <template x-for="name in profiles" :key="name">
-          <button
-            type="button"
-            class="chip"
-            :class="{ active: profile === name }"
-            @click="profile = name"
-            x-text="name"
-          ></button>
-        </template>
+          :disabled="busy || !canOpenTyped"
+          :title="openTitle"
+        >Open</button>
       </div>
 
-      <div class="status-card" x-show="profile">
-        <div class="status-top">
-          <div class="status-name" x-text="profile || '—'"></div>
-          <span class="pill">
-            <span class="dot" :class="statusDotClass"></span>
-            <span x-text="selectedLabel"></span>
-          </span>
-        </div>
-        <p class="status-explain" x-text="actionHint"></p>
+      <input
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif"
+        x-ref="iconFile"
+        class="sr-only"
+        @change="onIconPicked($event)"
+      />
 
-        <div class="icon-row">
-          <template x-if="hasCustomIcon">
-            <img class="icon-preview" :src="iconUrl" :alt="profile + ' icon'" />
-          </template>
-          <template x-if="!hasCustomIcon">
-            <div class="icon-preview placeholder" x-text="profile || '…'"></div>
-          </template>
-          <div class="icon-actions">
-            <input
-              type="file"
-              accept="image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif"
-              x-ref="iconFile"
-              @change="onIconPicked($event)"
-            />
-            <button type="button" class="btn-ghost" @click="$refs.iconFile.click()" :disabled="busy || !profile">
-              Choose icon…
-            </button>
-            <button
-              type="button"
-              class="btn-ghost"
-              x-show="hasCustomIcon"
-              @click="clearIcon()"
-              :disabled="busy"
-            >Remove icon</button>
-            <div
-              class="icon-info"
-              x-data="{ open: false }"
-              @click.outside="open = false"
-              @keydown.escape.window="open = false"
-            >
-              <button
-                type="button"
-                class="icon-info-btn"
-                aria-label="Icon help"
-                :aria-expanded="open"
-                @click="open = !open"
-              >i</button>
-              <p class="icon-help" :class="{ 'is-open': open }" role="note">
-                Icon for this browser on the dock. PNG works best (square, ~128×128 or larger).
-                After changing, Close + Open the profile (or unpin/re-pin) if the old icon sticks.
-              </p>
-            </div>
-          </div>
-        </div>
+      <template x-if="!liveRows.length && !savedRows.length">
+        <p class="empty">Type a name above and press Open.</p>
+      </template>
 
-        <div class="controls" x-show="canPause || canResume || canStop || imageBuilt">
-          <button
-            type="button"
-            class="btn-pause"
-            x-show="canPause"
-            @click="run('pause')"
-            :disabled="busy"
-          >Pause (freeze)</button>
-
-          <button
-            type="button"
-            class="btn-resume"
-            x-show="canResume"
-            @click="run('resume')"
-            :disabled="busy"
-          >Resume</button>
-
-          <button
-            type="button"
-            class="btn-stop"
-            x-show="canStop"
-            @click="run('stop')"
-            :disabled="busy"
-          >Close Chrome</button>
-
-          <button
-            type="button"
-            class="btn-ghost"
-            x-show="imageBuilt"
-            @click="run('build')"
-            :disabled="busy"
-            title="Only needed if Chrome inside Docker must be updated"
-          >Update install</button>
-        </div>
-      </div>
-
-      <p class="busy-line" x-show="busy" x-text="busyText"></p>
-    </section>
-
-    <section class="panel">
-      <div class="toolbar">
+      <template x-if="liveRows.length">
         <div>
-          <h2 class="panel-title">Currently open</h2>
-          <p class="panel-sub">Chrome windows started from this page.</p>
+          <p class="group-label">Open now</p>
+          <template x-for="row in liveRows" :key="row.profile">
+            <div
+              class="row is-live"
+              :class="{ 'is-sel': profile === row.profile }"
+              @click="profile = row.profile"
+            >
+              <div class="icon-wrap" @click.stop>
+                <button
+                  type="button"
+                  class="icon-btn"
+                  title="Dock icon"
+                  @click="pickIcon(row.profile)"
+                  :disabled="busy"
+                >
+                  <template x-if="icons[row.profile]">
+                    <img class="icon" :src="iconUrlFor(row.profile)" :alt="row.profile" />
+                  </template>
+                  <template x-if="!icons[row.profile]">
+                    <span class="icon ph" x-text="initials(row.profile)"></span>
+                  </template>
+                </button>
+                <button
+                  type="button"
+                  class="icon-clear"
+                  :class="{ 'is-on': !!icons[row.profile] }"
+                  title="Reset icon"
+                  @click="clearIconFor(row.profile)"
+                  :disabled="busy"
+                >×</button>
+              </div>
+
+              <div class="meta">
+                <p class="name" x-text="row.profile"></p>
+                <p class="sub">
+                  <span class="pill">
+                    <span class="dot" :class="row.paused ? 'warn' : 'on'"></span>
+                    <span x-text="row.paused ? 'Paused' : 'Open'"></span>
+                  </span>
+                  <span class="res" x-show="statLine(row.profile)" x-text="statLine(row.profile)"></span>
+                </p>
+              </div>
+
+              <div class="actions" @click.stop>
+                <button
+                  type="button"
+                  class="btn-pause"
+                  x-show="row.running"
+                  @click="run('pause', row.profile)"
+                  :disabled="busy"
+                >Pause</button>
+                <button
+                  type="button"
+                  class="btn-resume"
+                  x-show="row.paused"
+                  @click="run('resume', row.profile)"
+                  :disabled="busy"
+                >Resume</button>
+                <button
+                  type="button"
+                  class="btn-stop"
+                  @click="run('stop', row.profile)"
+                  :disabled="busy"
+                >Close</button>
+              </div>
+            </div>
+          </template>
         </div>
-        <button type="button" class="btn-ghost" @click="refresh()" :disabled="busy">Refresh</button>
-      </div>
+      </template>
 
-      <p class="empty" x-show="!containers.length">
-        Nothing open yet. Type a name above and press <strong>Open Chrome</strong>.
-      </p>
+      <template x-if="savedRows.length">
+        <div>
+          <p class="group-label">Saved</p>
+          <template x-for="row in savedRows" :key="row.profile">
+            <div
+              class="row"
+              :class="{ 'is-sel': profile === row.profile }"
+              @click="profile = row.profile"
+            >
+              <div class="icon-wrap" @click.stop>
+                <button
+                  type="button"
+                  class="icon-btn"
+                  title="Dock icon"
+                  @click="pickIcon(row.profile)"
+                  :disabled="busy"
+                >
+                  <template x-if="icons[row.profile]">
+                    <img class="icon" :src="iconUrlFor(row.profile)" :alt="row.profile" />
+                  </template>
+                  <template x-if="!icons[row.profile]">
+                    <span class="icon ph" x-text="initials(row.profile)"></span>
+                  </template>
+                </button>
+                <button
+                  type="button"
+                  class="icon-clear"
+                  :class="{ 'is-on': !!icons[row.profile] }"
+                  title="Reset icon"
+                  @click="clearIconFor(row.profile)"
+                  :disabled="busy"
+                >×</button>
+              </div>
 
-      <div class="list" x-show="containers.length">
-        <template x-for="row in containers" :key="row.name">
-          <div class="item">
-            <div class="item-meta">
-              <p class="item-title" x-text="row.profile"></p>
-              <p class="item-sub">
-                <span class="pill" style="margin-right:0.5rem">
-                  <span class="dot" :class="row.paused ? 'warn' : (row.running ? 'on' : '')"></span>
-                  <span x-text="plainState(row)"></span>
-                </span>
-                <span x-text="plainUptime(row)"></span>
-              </p>
+              <div class="meta">
+                <p class="name" x-text="row.profile"></p>
+                <p class="sub">
+                  <span class="pill">
+                    <span class="dot"></span>
+                    <span>Not open</span>
+                  </span>
+                </p>
+              </div>
+
+              <div class="actions" @click.stop>
+                <button
+                  type="button"
+                  class="btn-primary"
+                  @click="run('run', row.profile)"
+                  :disabled="busy || !imageBuilt"
+                >Open</button>
+              </div>
             </div>
-            <div class="item-actions">
-              <button type="button" class="btn-ghost" @click="profile = row.profile">Select</button>
-              <button type="button" class="btn-pause" x-show="row.running" @click="run('pause', row.profile)" :disabled="busy">Pause</button>
-              <button type="button" class="btn-resume" x-show="row.paused" @click="run('resume', row.profile)" :disabled="busy">Resume</button>
-              <button type="button" class="btn-primary" x-show="!row.running && !row.paused" @click="run('run', row.profile)" :disabled="busy">Open</button>
-              <button type="button" class="btn-stop" @click="run('stop', row.profile)" :disabled="busy">Close</button>
-            </div>
-          </div>
-        </template>
-      </div>
-    </section>
+          </template>
+        </div>
+      </template>
 
-    <details class="help">
-      <summary>What do these buttons mean?</summary>
-      <div class="help-body">
-        <p>Think of each <strong>name</strong> as a separate Chrome app on your computer.</p>
+      <p class="busy" x-show="busy" x-text="busyText"></p>
+    </div>
+
+    <details class="foot">
+      <summary>Help &amp; about</summary>
+      <div class="help">
+        <p>Each name is its own Chrome — cookies, dock icon, and window stay separate.</p>
         <dl>
           <div>
-            <dt>Open Chrome</dt>
-            <dd>Starts a browser for that name. If the name is new, a fresh profile is created automatically (new dock icon too).</dd>
+            <dt>Open</dt>
+            <dd>Starts that browser. A new name creates a fresh profile.</dd>
           </div>
           <div>
-            <dt>Pause (freeze)</dt>
-            <dd>Keeps the window’s memory, but uses almost no CPU — like putting it to sleep. Use Resume (or the dock right‑click menu) to wake it. The dock icon itself stays the same — GNOME does not let us dim it reliably.</dd>
+            <dt>Pause</dt>
+            <dd>Sleeps it in RAM (almost no CPU). Resume wakes it. Pause does not free memory.</dd>
           </div>
           <div>
-            <dt>Resume</dt>
-            <dd>Wakes a paused browser back up.</dd>
+            <dt>Close</dt>
+            <dd>Quits the window. Bookmarks stay for next time.</dd>
           </div>
           <div>
-            <dt>Close Chrome</dt>
-            <dd>Fully quits that browser. Your bookmarks/logins for that name are kept for next time.</dd>
-          </div>
-          <div>
-            <dt>Choose icon</dt>
-            <dd>Pick a custom image for this browser’s dock/taskbar icon. Remove icon restores the letter badge.</dd>
-          </div>
-          <div>
-            <dt>Install / Update install</dt>
-            <dd>Downloads Google Chrome into Docker. Do this once at the start, or later to update.</dd>
+            <dt>Icon</dt>
+            <dd>Click the picture to set a dock icon. Hover and tap × to reset.</dd>
           </div>
         </dl>
+        <div class="help-grid">
+          <div>
+            <h3>Strengths</h3>
+            <ul>
+              <li>One window per context</li>
+              <li>Custom dock icons</li>
+              <li>Pause without quitting</li>
+              <li>Leaves host Chrome alone</li>
+            </ul>
+          </div>
+          <div>
+            <h3>Good for</h3>
+            <ul>
+              <li>Work vs personal</li>
+              <li>Parking heavy sessions</li>
+              <li>Opening only what you need</li>
+            </ul>
+          </div>
+          <div>
+            <h3>Limits</h3>
+            <ul class="weak">
+              <li>Not a VPN or VM</li>
+              <li>Needs Docker + Linux</li>
+              <li>Pause keeps RAM</li>
+            </ul>
+          </div>
+        </div>
+        <p style="margin-top:1rem">
+          <button type="button" class="btn-ghost" @click="run('build')" :disabled="busy || !imageBuilt">
+            Update Chrome install
+          </button>
+          <button type="button" class="btn-ghost" @click="refresh(); refreshStats()" :disabled="busy">
+            Refresh now
+          </button>
+        </p>
         <pre class="log" x-text="log"></pre>
       </div>
     </details>
@@ -919,28 +793,20 @@
         profile: "",
         profiles: [],
         containers: [],
+        stats: [],
         icons: {},
         iconTick: 0,
         imageBuilt: false,
         busy: false,
         busyText: "Working…",
-        log: "Messages from the computer appear here when you click buttons.",
+        log: "Messages appear here when you use the buttons.",
         timer: null,
+        statsTimer: null,
+        theme: "light",
 
         get selected() {
           const name = (this.profile || "").trim();
           return this.containers.find((c) => c.profile === name) || null;
-        },
-
-        get hasCustomIcon() {
-          const name = (this.profile || "").trim();
-          return !!(name && this.icons[name]);
-        },
-
-        get iconUrl() {
-          const name = (this.profile || "").trim();
-          if (!name || !this.icons[name]) return "";
-          return `/api/icon/${encodeURIComponent(name)}?t=${this.iconTick}`;
         },
 
         get selectedState() {
@@ -950,68 +816,133 @@
           return "stopped";
         },
 
-        get selectedLabel() {
-          return {
-            idle: "not open",
-            running: "open now",
-            paused: "paused (sleeping)",
-            stopped: "closed (leftover)",
-          }[this.selectedState];
-        },
-
-        get statusDotClass() {
-          if (this.selectedState === "running") return "on";
-          if (this.selectedState === "paused") return "warn";
-          return "";
-        },
-
         get canRun() {
           return this.selectedState === "idle" || this.selectedState === "stopped";
         },
 
-        get canPause() {
-          return this.selectedState === "running";
+        get canOpenTyped() {
+          return !!(this.profile && this.imageBuilt && this.canRun);
         },
 
-        get canResume() {
-          return this.selectedState === "paused";
+        get openTitle() {
+          if (!this.imageBuilt) return "Install Chrome first";
+          if (!this.profile) return "Type a name";
+          if (!this.canRun) return "Already open — use Pause or Close in the list";
+          return "Open this browser";
         },
 
-        get canStop() {
-          return this.selectedState === "running" || this.selectedState === "paused" || this.selectedState === "stopped";
+        get browserRows() {
+          const byProfile = {};
+          for (const c of this.containers) byProfile[c.profile] = c;
+          const names = [...this.profiles];
+          for (const c of this.containers) {
+            if (!names.includes(c.profile)) names.push(c.profile);
+          }
+          return names.map((name) => {
+            const c = byProfile[name];
+            return {
+              profile: name,
+              name: c ? c.name : "",
+              status: c ? c.status : "",
+              state: c ? c.state : "stopped",
+              paused: !!(c && c.paused),
+              running: !!(c && c.running),
+            };
+          });
         },
 
-        get actionHint() {
-          if (!this.imageBuilt) return "Install Chrome first (yellow box above), then you can open this browser.";
-          if (!this.profile) return "Type a name above to create or reopen a browser.";
-          if (this.selectedState === "running") return "This Chrome is open on your desktop. Pause to sleep it, or Close to quit.";
-          if (this.selectedState === "paused") return "This Chrome is sleeping (almost no CPU). Resume to use it again, or Close to quit.";
-          if (this.selectedState === "stopped") return "It was closed awkwardly. Open again, or Close to clean up.";
-          return "Ready — press Open Chrome to create/start “" + this.profile + "”.";
+        get liveRows() {
+          return this.browserRows
+            .filter((r) => r.running || r.paused)
+            .sort((a, b) => Number(b.running) - Number(a.running) || a.profile.localeCompare(b.profile));
         },
 
-        plainState(row) {
-          if (row.paused) return "paused";
-          if (row.running) return "open";
-          return row.state || "closed";
+        get savedRows() {
+          return this.browserRows
+            .filter((r) => !r.running && !r.paused)
+            .sort((a, b) => a.profile.localeCompare(b.profile));
         },
 
-        plainUptime(row) {
-          const s = row.status || "";
-          if (s.startsWith("Up ")) return "Running for " + s.slice(3);
-          return s;
+        statsFor(name) {
+          return this.stats.find((s) => s.profile === name) || null;
+        },
+
+        statLine(name) {
+          const s = this.statsFor(name);
+          if (!s) return "";
+          const cpu = s.cpu_pct == null ? "—" : Number(s.cpu_pct).toFixed(1) + "%";
+          const mem = s.mem_used || (s.mem_pct == null ? "—" : Number(s.mem_pct).toFixed(1) + "%");
+          return "CPU " + cpu + " · RAM " + mem;
+        },
+
+        initials(name) {
+          return String(name || "?").slice(0, 2).toUpperCase();
+        },
+
+        iconUrlFor(name) {
+          if (!name || !this.icons[name]) return "";
+          return `/api/icon/${encodeURIComponent(name)}?t=${this.iconTick}`;
+        },
+
+        pickIcon(name) {
+          this.profile = name;
+          this.$nextTick(() => {
+            if (this.$refs.iconFile) this.$refs.iconFile.click();
+          });
+        },
+
+        async clearIconFor(name) {
+          this.profile = name;
+          await this.clearIcon();
         },
 
         init() {
+          this.applyTheme(
+            document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light",
+            false
+          );
           this.refresh().then(() => {
             if (!this.profile) {
-              const running = this.containers.find((c) => c.running || c.paused);
-              this.profile = (running && running.profile) || this.profiles[0] || "default";
+              const live = this.liveRows[0];
+              this.profile = (live && live.profile) || this.profiles[0] || "";
             }
           });
+          this.refreshStats();
           this.timer = setInterval(() => {
             if (!this.busy) this.refresh(true);
           }, 4000);
+          this.statsTimer = setInterval(() => this.refreshStats(), 10000);
+        },
+
+        applyTheme(theme, persistLocal) {
+          const next = theme === "dark" ? "dark" : "light";
+          this.theme = next;
+          document.documentElement.setAttribute("data-theme", next);
+          if (persistLocal !== false) {
+            try {
+              localStorage.setItem("docked-browser-theme", next);
+            } catch (_) {}
+          }
+        },
+
+        async setTheme(theme) {
+          this.applyTheme(theme, true);
+          try {
+            await fetch("/api/prefs", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ theme: this.theme }),
+            });
+          } catch (_) {}
+        },
+
+        async refreshStats() {
+          try {
+            const res = await fetch("/api/stats");
+            if (!res.ok) return;
+            const data = await res.json();
+            this.stats = data.containers || [];
+          } catch (_) {}
         },
 
         appendLog(text) {
@@ -1025,6 +956,9 @@
           this.profiles = data.profiles || [];
           this.icons = data.icons || {};
           this.iconTick = Date.now();
+          if (data.theme === "dark" || data.theme === "light") {
+            this.applyTheme(data.theme, true);
+          }
         },
 
         async onIconPicked(event) {
@@ -1123,7 +1057,7 @@
           this.busy = true;
           const labels = {
             build: "Installing / updating Chrome… this can take a few minutes.",
-            run: `Opening Chrome “${profile}”…`,
+            run: `Opening “${profile}”…`,
             pause: `Pausing “${profile}”…`,
             resume: `Resuming “${profile}”…`,
             stop: `Closing “${profile}”…`,
@@ -1143,6 +1077,7 @@
               this.applyStatus(data);
             }
             await this.refresh(true);
+            if (action !== "build") this.refreshStats();
           } catch (err) {
             this.appendLog("Request failed: " + err);
           } finally {

@@ -13,7 +13,15 @@ PROFILES_DIR = Path.home() / ".config" / "docker-chrome-profiles"
 STATE_DIR = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "docked-browser"
 ACTIVE_FILE = STATE_DIR / "active-profile"
 ICON_DIR = STATE_DIR / "icons"
-LAUNCHER_ICON = ICON_DIR / "docked-browser.png"
+PREFS_FILE = STATE_DIR / "prefs.json"
+# Unified brand family (see gui/brand_icons.py) — same mark, different glyphs
+LAUNCHER_ICON = ICON_DIR / "docked-browser.png"  # web UI / generic
+TRAY_ICON = ICON_DIR / "docked-browser-tray.png"
+MODAL_ICON = ICON_DIR / "docked-browser-modal.png"
+BRAND_ICONS_PY = Path(__file__).resolve().parent / "brand_icons.py"
+
+THEMES = frozenset({"light", "dark"})
+DEFAULT_PREFS = {"theme": "light"}
 
 BIN_DIR = Path(__file__).resolve().parent.parent / "bin"
 CLI = BIN_DIR / "docked-browser"
@@ -141,19 +149,64 @@ def list_playing_profiles() -> list[dict]:
     return list_profiles(playing_only=True)
 
 
+def load_prefs() -> dict:
+    """User prefs shared by web UI, modal, and tray (theme, …)."""
+    data = dict(DEFAULT_PREFS)
+    try:
+        raw = json.loads(PREFS_FILE.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            data.update(raw)
+    except (OSError, json.JSONDecodeError):
+        pass
+    theme = str(data.get("theme", "light")).lower()
+    data["theme"] = theme if theme in THEMES else "light"
+    return data
+
+
+def save_prefs(updates: dict) -> dict:
+    data = load_prefs()
+    if "theme" in updates:
+        theme = str(updates["theme"]).lower()
+        if theme not in THEMES:
+            raise ValueError("theme must be light or dark")
+        data["theme"] = theme
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    PREFS_FILE.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return data
+
+
+def get_theme() -> str:
+    return load_prefs()["theme"]
+
+
+def ensure_brand_icons() -> None:
+    """Generate web/tray/modal brand PNGs if missing."""
+    needed = (LAUNCHER_ICON, TRAY_ICON, MODAL_ICON)
+    if all(p.is_file() for p in needed):
+        return
+    if not BRAND_ICONS_PY.is_file():
+        return
+    try:
+        subprocess.run(
+            ["python3", str(BRAND_ICONS_PY), "--icons-dir", str(ICON_DIR), "--no-static"],
+            check=False,
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
 def playing_tray_icon() -> Path:
-    """Icon for the tray: same dock image as the modal uses for the playing profile."""
-    playing = list_playing_profiles()
-    for item in playing:
-        if item.get("active"):
-            path = profile_icon_path(item["profile"])
-            if path:
-                return path
-    if playing:
-        path = profile_icon_path(playing[0]["profile"])
-        if path:
-            return path
-    return LAUNCHER_ICON
+    """Tray status icon — brand tray glyph (not a profile dock icon)."""
+    ensure_brand_icons()
+    return TRAY_ICON if TRAY_ICON.is_file() else LAUNCHER_ICON
+
+
+def modal_window_icon() -> Path:
+    """Focus modal window icon — brand modal glyph."""
+    ensure_brand_icons()
+    return MODAL_ICON if MODAL_ICON.is_file() else LAUNCHER_ICON
 
 
 def get_active_profile() -> str:

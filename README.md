@@ -75,9 +75,10 @@ CLI:
 ├── gui/
 │   ├── control.py
 │   ├── server.py
-│   ├── dock_icon.py
+│   ├── dock_icon.py             # per-profile dock badges
+│   ├── brand_icons.py           # unified web/tray/modal brand glyphs
 │   ├── templates/
-│   └── static/
+│   └── static/                  # favicons = web brand glyph
 ├── fontconfig/
 ├── Dockerfile
 ├── README.md
@@ -91,7 +92,9 @@ CLI:
 | `~/.config/docker-chrome-profiles/<name>/` | Chrome profile data |
 | `…/<name>/dock-icon.png` | Optional custom dock icon source |
 | `~/.local/share/docked-browser/icons/docked-browser-<name>.png` | Installed dock PNG |
+| `…/docked-browser.png` / `-tray.png` / `-modal.png` | Brand icons (list / menu / focus) |
 | `~/.local/share/applications/docked-browser-<name>.desktop` | Dock / launcher entry |
+| `~/.local/share/docked-browser/prefs.json` | Shared UI prefs (theme) |
 | `~/Downloads` | Shared downloads mount |
 
 Naming:

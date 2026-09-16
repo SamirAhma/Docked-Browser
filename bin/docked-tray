@@ -16,13 +16,17 @@ GUI_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, GUI_DIR)
 from control import (  # noqa: E402
     LAUNCHER_ICON,
+    TRAY_ICON,
+    ensure_brand_icons,
     get_active_profile,
+    get_theme,
     list_playing_profiles,
     open_focus_modal,
     open_full_gui,
     playing_tray_icon,
     profile_icon_path,
     run_cli,
+    save_prefs,
 )
 
 APP_ID = "org.dockedbrowser.tray"
@@ -40,6 +44,7 @@ def _menu_image(path: str | None, size: int = 22) -> Gtk.Image:
 
 class Tray:
     def __init__(self) -> None:
+        ensure_brand_icons()
         icon = str(playing_tray_icon()) if playing_tray_icon().is_file() else "web-browser"
         self.ind = AppIndicator3.Indicator.new(
             APP_ID,
@@ -71,26 +76,26 @@ class Tray:
             current = playing[0]["profile"] if playing else ""
 
         head = Gtk.MenuItem.new_with_label(
-            f"Playing: {current}" if current else "Playing: (none)"
+            f"Now Playing — {current}" if current else "Nothing Playing"
         )
         head.set_sensitive(False)
         self.menu.append(head)
         self.menu.append(Gtk.SeparatorMenuItem())
 
-        open_item = Gtk.MenuItem.new_with_label("Open focus modal…")
+        open_item = Gtk.MenuItem.new_with_label("Open Picker…")
         open_item.connect("activate", lambda *_: open_focus_modal())
         self.menu.append(open_item)
         self.menu.append(Gtk.SeparatorMenuItem())
 
         if not playing:
-            empty = Gtk.MenuItem.new_with_label("(nothing playing)")
+            empty = Gtk.MenuItem.new_with_label("No browsers running")
             empty.set_sensitive(False)
             self.menu.append(empty)
         else:
             for item in playing:
                 label = item["profile"]
                 if item.get("active"):
-                    label = f"▶ {label}"
+                    label = f"● {label}"
                 icon_path = item.get("icon") or ""
                 if not icon_path:
                     p = profile_icon_path(item["profile"])
@@ -104,11 +109,24 @@ class Tray:
                 self.menu.append(mi)
 
         self.menu.append(Gtk.SeparatorMenuItem())
-        ui = Gtk.MenuItem.new_with_label("Full web UI")
+        ui = Gtk.MenuItem.new_with_label("Open Web UI")
         ui.connect("activate", lambda *_: open_full_gui())
         self.menu.append(ui)
 
-        quit_item = Gtk.MenuItem.new_with_label("Quit tray")
+        appear = Gtk.MenuItem.new_with_label("Appearance")
+        appear_menu = Gtk.Menu()
+        theme = get_theme()
+        group = []
+        for label, value in (("Light", "light"), ("Dark", "dark")):
+            item = Gtk.RadioMenuItem.new_with_label(group, label)
+            group = item.get_group()
+            item.set_active(theme == value)
+            item.connect("toggled", self._on_theme_pick, value)
+            appear_menu.append(item)
+        appear.set_submenu(appear_menu)
+        self.menu.append(appear)
+
+        quit_item = Gtk.MenuItem.new_with_label("Quit")
         quit_item.connect("activate", lambda *_: Gtk.main_quit())
         self.menu.append(quit_item)
         self.menu.show_all()
@@ -120,7 +138,7 @@ class Tray:
             self.ind.set_label("", "")
             self.ind.set_title("Docked Browser")
 
-        # Same file the modal uses for that profile (dock PNG)
+        # Brand tray glyph (menu bars) — not a profile dock icon
         icon = playing_tray_icon()
         if icon.is_file():
             self.ind.set_icon(str(icon))
@@ -138,9 +156,18 @@ class Tray:
             item.connect("activate", on_activate)
             menu.append(item)
 
-        add("Open / Focus", "activate")
+        add("Focus", "activate")
         add("Pause", "pause")
-        add("Stop (close)", "stop")
+        add("Close", "stop")
+
+    def _on_theme_pick(self, item: Gtk.RadioMenuItem, theme: str) -> None:
+        if not item.get_active():
+            return
+        try:
+            save_prefs({"theme": theme})
+        except ValueError:
+            return
+        # Menu rebuild would steal focus; prefs file is enough for web/modal
 
 
 def main() -> int:
@@ -153,7 +180,8 @@ def main() -> int:
             os.environ["WAYLAND_DISPLAY"] = "wayland-0"
 
     cli = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docked-browser")
-    if not LAUNCHER_ICON.is_file() and os.path.isfile(cli):
+    ensure_brand_icons()
+    if not TRAY_ICON.is_file() and not LAUNCHER_ICON.is_file() and os.path.isfile(cli):
         os.system(f'"{cli}" refresh-dock >/dev/null 2>&1')
 
     Tray()

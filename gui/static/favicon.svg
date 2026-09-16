@@ -1,19 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Docked Browser">
   <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#0b7a75"/>
-      <stop offset="100%" stop-color="#096660"/>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2b8af0"/>
+      <stop offset="100%" stop-color="#0071e3"/>
     </linearGradient>
   </defs>
-  <rect width="32" height="32" rx="8" fill="url(#g)"/>
-  <!-- browser window -->
-  <rect x="6" y="8" width="20" height="16" rx="3" fill="#e8f6f5"/>
-  <rect x="6" y="8" width="20" height="4.5" rx="3" fill="#15202b" opacity="0.85"/>
-  <circle cx="9.2" cy="10.25" r="0.9" fill="#ff6b6b"/>
-  <circle cx="12" cy="10.25" r="0.9" fill="#ffd166"/>
-  <circle cx="14.8" cy="10.25" r="0.9" fill="#06d6a0"/>
-  <!-- cockpit dial -->
-  <circle cx="16" cy="19" r="4.2" fill="none" stroke="#0b7a75" stroke-width="1.6"/>
-  <circle cx="16" cy="19" r="1.1" fill="#0b7a75"/>
-  <path d="M16 19 L18.6 16.6" stroke="#0b7a75" stroke-width="1.4" stroke-linecap="round"/>
+  <rect width="32" height="32" rx="7" fill="url(#g)"/>
+  <rect x="5" y="7" width="22" height="18" rx="3" fill="#ffffff"/>
+  <path d="M5 10.5h22V10a3 3 0 0 0-3-3H8a3 3 0 0 0-3 3v.5z" fill="#1d1d1f"/>
+  <circle cx="8.2" cy="8.7" r="1" fill="#ff5f57"/>
+  <circle cx="11.2" cy="8.7" r="1" fill="#ffbd2e"/>
+  <circle cx="14.2" cy="8.7" r="1" fill="#28c840"/>
+  <rect x="8" y="14" width="16" height="3.2" rx="1" fill="#0071e3"/>
+  <rect x="8" y="19.2" width="12" height="3.2" rx="1" fill="#0071e3"/>
 </svg>

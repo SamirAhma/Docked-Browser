@@ -11,7 +11,10 @@ Stack
 HTTP API
 --------
 GET  /              → HTML UI
-GET  /api/status    → {image_built, containers[], profiles[], icons{}}
+GET  /api/status    → {image_built, containers[], profiles[], icons{}, theme}
+GET  /api/stats     → {containers:[{profile,cpu_pct,mem_used,mem_limit,mem_pct,state}]}
+GET  /api/prefs     → {theme}
+POST /api/prefs     → {theme: light|dark}
 GET  /api/icon/<p>  → custom PNG bytes (404 if none)
 POST /api/action    → {action: build|run|pause|resume|stop, profile?}
 POST /api/icon      → {profile, action: set|clear, image?: data-URL}
@@ -31,6 +34,8 @@ import subprocess
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
+
+from control import get_theme, load_prefs, save_prefs
 
 # --- Constants ---------------------------------------------------------------
 GUI_DIR = Path(__file__).resolve().parent
@@ -178,7 +183,125 @@ def status_payload() -> dict:
         "containers": docker_chrome_status(),
         "profiles": profiles,
         "icons": {name: icon_path(name).is_file() for name in profiles},
+        "theme": get_theme(),
     }
+
+
+def _parse_pct(raw: str) -> float | None:
+    text = (raw or "").strip().rstrip("%")
+    if not text or text == "--":
+        return None
+    try:
+        return round(float(text), 1)
+    except ValueError:
+        return None
+
+
+def _parse_mem_pair(raw: str) -> tuple[str, str]:
+    """Split '1.2GiB / 15.6GiB' → (used, limit)."""
+    text = (raw or "").strip()
+    if " / " in text:
+        used, limit = text.split(" / ", 1)
+        return used.strip(), limit.strip()
+    return text, ""
+
+
+def docker_resource_stats() -> list[dict]:
+    """One-shot CPU/RAM for chrome-* containers (running + paused).
+
+    Uses ``docker stats --no-stream`` so it does not stream forever.
+    """
+    rows = docker_chrome_status()
+    live = [r for r in rows if r["running"] or r["paused"]]
+    if not live:
+        return []
+
+    names = [r["name"] for r in live]
+    by_name = {r["name"]: r for r in live}
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "stats",
+                "--no-stream",
+                "--format",
+                "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}",
+                *names,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return [
+            {
+                "name": r["name"],
+                "profile": r["profile"],
+                "state": r["state"],
+                "paused": r["paused"],
+                "running": r["running"],
+                "cpu_pct": None,
+                "mem_pct": None,
+                "mem_used": "",
+                "mem_limit": "",
+                "mem_usage": "",
+            }
+            for r in live
+        ]
+
+    out: list[dict] = []
+    seen: set[str] = set()
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 4:
+            continue
+        name, cpu_s, mem_s, mem_pct_s = parts[0], parts[1], parts[2], parts[3]
+        if not name.startswith("chrome-"):
+            continue
+        meta = by_name.get(name)
+        if not meta:
+            continue
+        used, limit = _parse_mem_pair(mem_s)
+        seen.add(name)
+        out.append(
+            {
+                "name": name,
+                "profile": meta["profile"],
+                "state": meta["state"],
+                "paused": meta["paused"],
+                "running": meta["running"],
+                "cpu_pct": _parse_pct(cpu_s),
+                "mem_pct": _parse_pct(mem_pct_s),
+                "mem_used": used,
+                "mem_limit": limit,
+                "mem_usage": mem_s.strip(),
+            }
+        )
+
+    for r in live:
+        if r["name"] in seen:
+            continue
+        out.append(
+            {
+                "name": r["name"],
+                "profile": r["profile"],
+                "state": r["state"],
+                "paused": r["paused"],
+                "running": r["running"],
+                "cpu_pct": None,
+                "mem_pct": None,
+                "mem_used": "",
+                "mem_limit": "",
+                "mem_usage": "",
+            }
+        )
+
+    out.sort(key=lambda i: (0 if i["running"] else 1, i["profile"]))
+    return out
+
+
+def stats_payload() -> dict:
+    return {"containers": docker_resource_stats()}
 
 
 # --- Custom dock icons -------------------------------------------------------
@@ -321,6 +444,14 @@ class CockpitHandler(BaseHTTPRequestHandler):
             self._send_json(200, status_payload())
             return
 
+        if path == "/api/stats":
+            self._send_json(200, stats_payload())
+            return
+
+        if path == "/api/prefs":
+            self._send_json(200, load_prefs())
+            return
+
         if path.startswith("/api/icon/"):
             profile = unquote(path[len("/api/icon/") :])
             if not PROFILE_RE.match(profile):
@@ -343,6 +474,15 @@ class CockpitHandler(BaseHTTPRequestHandler):
             payload = json.loads(raw.decode("utf-8") or "{}")
         except json.JSONDecodeError:
             self._send_json(400, {"ok": False, "output": "Invalid JSON"})
+            return
+
+        if path == "/api/prefs":
+            try:
+                prefs = save_prefs(payload if isinstance(payload, dict) else {})
+            except ValueError as exc:
+                self._send_json(400, {"ok": False, "output": str(exc)})
+                return
+            self._send_json(200, {"ok": True, **prefs})
             return
 
         if path == "/api/icon":
