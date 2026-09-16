@@ -262,6 +262,12 @@ cmd_run() {
     -e "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
     -v /tmp/.X11-unix:/tmp/.X11-unix:ro
     -v "$DATA_DIR:/home/chromeuser/.config/google-chrome"
+    # Host paths must exist at the same absolute paths inside the container.
+    # File pickers (WhatsApp, Gmail, …) return /home/you/... — without this,
+    # Chrome uploads 0-byte / "empty" files from Documents etc.
+    -v "$HOME:$HOME:ro"
+    # Downloads writable for save + upload (overlays the RO home mount)
+    -v "$DOWNLOADS_DIR:$DOWNLOADS_DIR"
     -v "$DOWNLOADS_DIR:/home/chromeuser/Downloads"
     --user "$(id -u):$(id -g)"
   )

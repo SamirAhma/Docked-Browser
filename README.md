@@ -95,7 +95,8 @@ CLI:
 | `…/docked-browser.png` / `-tray.png` / `-modal.png` | Brand icons (list / menu / focus) |
 | `~/.local/share/applications/docked-browser-<name>.desktop` | Dock / launcher entry |
 | `~/.local/share/docked-browser/prefs.json` | Shared UI prefs (theme) |
-| `~/Downloads` | Shared downloads mount |
+| `~/Downloads` | Shared downloads (read/write) |
+| `$HOME` (read-only in container) | Same host paths for file uploads (WhatsApp, etc.) |
 
 Naming:
 

@@ -25,38 +25,84 @@ from control import (  # noqa: E402
 
 APP_ID = "org.dockedbrowser.focus"
 
+# Paint both themes ourselves on top of Adwaita (light). Never enable
+# Adwaita:dark — its button gradients fight label colors (white-on-white).
 CSS_LIGHT = b"""
 window, window.background { background-color: #f5f5f7; color: #1d1d1f; }
 headerbar {
-  background-color: #f5f5f7; background-image: none; color: #1d1d1f;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.08); box-shadow: none;
-  min-height: 44px; padding: 4px 8px;
+  background-color: #f5f5f7;
+  background-image: none;
+  color: #1d1d1f;
+  border-bottom-color: rgba(0, 0, 0, 0.08);
+  box-shadow: none;
+  min-height: 44px;
+  padding: 4px 8px;
 }
-headerbar .title { color: #1d1d1f; font-weight: 700; font-size: 13px; letter-spacing: -0.2px; }
-headerbar button {
-  border-radius: 980px; background: rgba(0, 0, 0, 0.06); color: #1d1d1f;
-  border: none; box-shadow: none; min-height: 28px; min-width: 28px; padding: 4px 10px;
+headerbar .title { color: #1d1d1f; font-weight: 700; font-size: 13px; }
+headerbar button, headerbar button.titlebutton {
+  background-image: none;
+  background-color: #e5e5ea;
+  color: #1d1d1f;
+  border: none;
+  box-shadow: none;
+  border-radius: 980px;
+  min-height: 28px;
+  min-width: 28px;
+  padding: 4px 10px;
 }
-headerbar button:hover { background: rgba(0, 0, 0, 0.1); }
-headerbar button.titlebutton { background: rgba(0, 0, 0, 0.08); color: #1d1d1f; }
+headerbar button:hover, headerbar button.titlebutton:hover {
+  background-image: none;
+  background-color: #d8d8dc;
+}
+headerbar button label, headerbar button image { color: #1d1d1f; }
 .section-title { font-size: 22px; font-weight: 700; letter-spacing: -0.4px; color: #1d1d1f; }
 .hint { color: #86868b; font-size: 12.5px; }
 list { background-color: transparent; border: none; }
 row {
-  background-color: #ffffff; border-radius: 14px; margin: 5px 0; padding: 2px 4px;
+  background-color: #ffffff;
+  border-radius: 14px;
+  margin: 5px 0;
+  padding: 2px 4px;
   border: 1px solid rgba(0, 0, 0, 0.06);
 }
 row:hover { background-color: #fafafa; }
-row.empty-row, row.empty-row:hover { background-color: transparent; border: none; box-shadow: none; }
+row.empty-row, row.empty-row:hover {
+  background-color: transparent;
+  border: none;
+  box-shadow: none;
+}
 .profile-name { font-size: 14px; font-weight: 700; color: #1d1d1f; }
 .profile-state { font-size: 12px; color: #86868b; }
 button {
-  border-radius: 980px; padding: 8px 14px; font-weight: 600; border: none;
-  background-color: rgba(0, 0, 0, 0.06); color: #1d1d1f; box-shadow: none;
+  border-radius: 980px;
+  padding: 8px 14px;
+  font-weight: 600;
+  border: none;
+  box-shadow: none;
+  outline: none;
+  background-image: none;
+  background-color: #e5e5ea;
+  color: #1d1d1f;
 }
-button:hover { background-color: rgba(0, 0, 0, 0.1); }
-button.suggested-action { background-color: #0071e3; color: #ffffff; }
-button.suggested-action:hover { background-color: #0077ed; }
+button label { color: #1d1d1f; }
+button:hover, button:active, button:checked {
+  background-image: none;
+  background-color: #d8d8dc;
+  color: #1d1d1f;
+}
+button:hover label, button:active label, button:checked label { color: #1d1d1f; }
+button.suggested-action {
+  background-image: none;
+  background-color: #0071e3;
+  color: #ffffff;
+}
+button.suggested-action label { color: #ffffff; }
+button.suggested-action:hover, button.suggested-action:active {
+  background-image: none;
+  background-color: #0077ed;
+  color: #ffffff;
+}
+button.suggested-action:hover label, button.suggested-action:active label { color: #ffffff; }
 .empty-title { color: #1d1d1f; font-size: 15px; font-weight: 700; }
 .empty-body { color: #86868b; font-size: 13px; }
 """
@@ -64,35 +110,79 @@ button.suggested-action:hover { background-color: #0077ed; }
 CSS_DARK = b"""
 window, window.background { background-color: #1c1c1e; color: #f5f5f7; }
 headerbar {
-  background-color: #1c1c1e; background-image: none; color: #f5f5f7;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1); box-shadow: none;
-  min-height: 44px; padding: 4px 8px;
+  background-color: #1c1c1e;
+  background-image: none;
+  color: #f5f5f7;
+  border-bottom-color: rgba(255, 255, 255, 0.12);
+  box-shadow: none;
+  min-height: 44px;
+  padding: 4px 8px;
 }
-headerbar .title { color: #f5f5f7; font-weight: 700; font-size: 13px; letter-spacing: -0.2px; }
-headerbar button {
-  border-radius: 980px; background: rgba(255, 255, 255, 0.1); color: #f5f5f7;
-  border: none; box-shadow: none; min-height: 28px; min-width: 28px; padding: 4px 10px;
+headerbar .title { color: #f5f5f7; font-weight: 700; font-size: 13px; }
+headerbar button, headerbar button.titlebutton {
+  background-image: none;
+  background-color: #3a3a3c;
+  color: #f5f5f7;
+  border: none;
+  box-shadow: none;
+  border-radius: 980px;
+  min-height: 28px;
+  min-width: 28px;
+  padding: 4px 10px;
 }
-headerbar button:hover { background: rgba(255, 255, 255, 0.16); }
-headerbar button.titlebutton { background: rgba(255, 255, 255, 0.12); color: #f5f5f7; }
+headerbar button:hover, headerbar button.titlebutton:hover {
+  background-image: none;
+  background-color: #48484a;
+}
+headerbar button label, headerbar button image { color: #f5f5f7; }
 .section-title { font-size: 22px; font-weight: 700; letter-spacing: -0.4px; color: #f5f5f7; }
 .hint { color: #98989d; font-size: 12.5px; }
 list { background-color: transparent; border: none; }
 row {
-  background-color: #2c2c2e; border-radius: 14px; margin: 5px 0; padding: 2px 4px;
+  background-color: #2c2c2e;
+  border-radius: 14px;
+  margin: 5px 0;
+  padding: 2px 4px;
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 row:hover { background-color: #3a3a3c; }
-row.empty-row, row.empty-row:hover { background-color: transparent; border: none; box-shadow: none; }
+row.empty-row, row.empty-row:hover {
+  background-color: transparent;
+  border: none;
+  box-shadow: none;
+}
 .profile-name { font-size: 14px; font-weight: 700; color: #f5f5f7; }
 .profile-state { font-size: 12px; color: #98989d; }
 button {
-  border-radius: 980px; padding: 8px 14px; font-weight: 600; border: none;
-  background-color: rgba(255, 255, 255, 0.1); color: #f5f5f7; box-shadow: none;
+  border-radius: 980px;
+  padding: 8px 14px;
+  font-weight: 600;
+  border: none;
+  box-shadow: none;
+  outline: none;
+  background-image: none;
+  background-color: #3a3a3c;
+  color: #f5f5f7;
 }
-button:hover { background-color: rgba(255, 255, 255, 0.16); }
-button.suggested-action { background-color: #0a84ff; color: #ffffff; }
-button.suggested-action:hover { background-color: #409cff; }
+button label { color: #f5f5f7; }
+button:hover, button:active, button:checked {
+  background-image: none;
+  background-color: #48484a;
+  color: #f5f5f7;
+}
+button:hover label, button:active label, button:checked label { color: #f5f5f7; }
+button.suggested-action {
+  background-image: none;
+  background-color: #0a84ff;
+  color: #ffffff;
+}
+button.suggested-action label { color: #ffffff; }
+button.suggested-action:hover, button.suggested-action:active {
+  background-image: none;
+  background-color: #409cff;
+  color: #ffffff;
+}
+button.suggested-action:hover label, button.suggested-action:active label { color: #ffffff; }
 .empty-title { color: #f5f5f7; font-size: 15px; font-weight: 700; }
 .empty-body { color: #98989d; font-size: 13px; }
 """
@@ -103,11 +193,14 @@ _css_provider: Gtk.CssProvider | None = None
 def _apply_theme(theme: str | None = None) -> None:
     global _css_provider
     theme = theme or get_theme()
-    dark = theme == "dark"
+    os.environ["GTK_THEME"] = "Adwaita"
     settings = Gtk.Settings.get_default()
     if settings is not None:
-        settings.set_property("gtk-application-prefer-dark-theme", dark)
-    os.environ["GTK_THEME"] = "Adwaita:dark" if dark else "Adwaita"
+        settings.set_property("gtk-application-prefer-dark-theme", False)
+        try:
+            settings.set_property("gtk-theme-name", "Adwaita")
+        except Exception:
+            pass
 
     screen = Gdk.Screen.get_default()
     if screen is None:
@@ -115,11 +208,11 @@ def _apply_theme(theme: str | None = None) -> None:
     if _css_provider is not None:
         Gtk.StyleContext.remove_provider_for_screen(screen, _css_provider)
     _css_provider = Gtk.CssProvider()
-    _css_provider.load_from_data(CSS_DARK if dark else CSS_LIGHT)
+    _css_provider.load_from_data(CSS_DARK if theme == "dark" else CSS_LIGHT)
     Gtk.StyleContext.add_provider_for_screen(
         screen,
         _css_provider,
-        Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        Gtk.STYLE_PROVIDER_PRIORITY_USER,
     )
 
 
@@ -152,7 +245,6 @@ class FocusWindow(Gtk.ApplicationWindow):
         self.set_type_hint(Gdk.WindowTypeHint.DIALOG)
         self._apply_window_icon()
 
-        # Custom light header — avoids dark CSD title with unreadable text
         bar = Gtk.HeaderBar()
         bar.set_show_close_button(True)
         bar.set_title("Docked Browser")
@@ -222,11 +314,12 @@ class FocusWindow(Gtk.ApplicationWindow):
                 pass
 
     def _tick(self) -> bool:
+        # Re-resolve theme (system may follow the desktop)
+        theme = get_theme()
+        if theme != getattr(self, "_theme", None):
+            self._theme = theme
+            _apply_theme(theme)
         if not self._busy:
-            theme = get_theme()
-            if theme != self._theme:
-                self._theme = theme
-                _apply_theme(theme)
             self.reload()
         return True
 
@@ -400,7 +493,6 @@ def main() -> int:
         sock = os.path.join(runtime, "wayland-0")
         if os.path.exists(sock):
             os.environ["WAYLAND_DISPLAY"] = "wayland-0"
-    # Theme comes from ~/.local/share/docked-browser/prefs.json
     _apply_theme()
     return FocusApp().run(sys.argv)
 

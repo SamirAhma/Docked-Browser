@@ -20,8 +20,8 @@ TRAY_ICON = ICON_DIR / "docked-browser-tray.png"
 MODAL_ICON = ICON_DIR / "docked-browser-modal.png"
 BRAND_ICONS_PY = Path(__file__).resolve().parent / "brand_icons.py"
 
-THEMES = frozenset({"light", "dark"})
-DEFAULT_PREFS = {"theme": "light"}
+THEMES = frozenset({"light", "dark", "system"})
+DEFAULT_PREFS = {"theme": "system"}
 
 BIN_DIR = Path(__file__).resolve().parent.parent / "bin"
 CLI = BIN_DIR / "docked-browser"
@@ -149,6 +149,51 @@ def list_playing_profiles() -> list[dict]:
     return list_profiles(playing_only=True)
 
 
+def detect_system_theme() -> str:
+    """Return light|dark from the desktop (GNOME color-scheme / GTK)."""
+    try:
+        result = subprocess.run(
+            ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if result.returncode == 0:
+            value = result.stdout.strip().strip("'\"")
+            if value == "prefer-dark":
+                return "dark"
+            if value in {"prefer-light", "default"}:
+                return "light"
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+    try:
+        result = subprocess.run(
+            ["gsettings", "get", "org.gnome.desktop.interface", "gtk-theme"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if result.returncode == 0 and "dark" in result.stdout.strip().lower():
+            return "dark"
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+    try:
+        import gi
+
+        gi.require_version("Gtk", "3.0")
+        from gi.repository import Gtk
+
+        settings = Gtk.Settings.get_default()
+        if settings is not None and settings.get_property("gtk-application-prefer-dark-theme"):
+            return "dark"
+    except Exception:
+        pass
+
+    return "light"
+
+
 def load_prefs() -> dict:
     """User prefs shared by web UI, modal, and tray (theme, …)."""
     data = dict(DEFAULT_PREFS)
@@ -158,8 +203,8 @@ def load_prefs() -> dict:
             data.update(raw)
     except (OSError, json.JSONDecodeError):
         pass
-    theme = str(data.get("theme", "light")).lower()
-    data["theme"] = theme if theme in THEMES else "light"
+    theme = str(data.get("theme", "system")).lower()
+    data["theme"] = theme if theme in THEMES else "system"
     return data
 
 
@@ -168,15 +213,42 @@ def save_prefs(updates: dict) -> dict:
     if "theme" in updates:
         theme = str(updates["theme"]).lower()
         if theme not in THEMES:
-            raise ValueError("theme must be light or dark")
+            raise ValueError("theme must be light, dark, or system")
         data["theme"] = theme
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     PREFS_FILE.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return data
+    return prefs_payload_from(data)
+
+
+def get_theme_pref() -> str:
+    """Stored preference: light | dark | system."""
+    return load_prefs()["theme"]
+
+
+def resolve_theme(pref: str | None = None) -> str:
+    """Effective appearance: light | dark."""
+    choice = (pref or get_theme_pref()).lower()
+    if choice == "dark":
+        return "dark"
+    if choice == "light":
+        return "light"
+    return detect_system_theme()
 
 
 def get_theme() -> str:
-    return load_prefs()["theme"]
+    """Effective theme for painting UIs (resolves system → light/dark)."""
+    return resolve_theme()
+
+
+def prefs_payload_from(data: dict) -> dict:
+    pref = str(data.get("theme", "system"))
+    if pref not in THEMES:
+        pref = "system"
+    return {"theme": pref, "theme_resolved": resolve_theme(pref)}
+
+
+def prefs_payload() -> dict:
+    return prefs_payload_from(load_prefs())
 
 
 def ensure_brand_icons() -> None:

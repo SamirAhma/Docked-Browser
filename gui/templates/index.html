@@ -14,10 +14,15 @@
     // Apply saved theme before paint to avoid a light flash
     (function () {
       try {
-        var t = localStorage.getItem("docked-browser-theme");
-        if (t === "dark" || t === "light") {
-          document.documentElement.setAttribute("data-theme", t);
+        var t = localStorage.getItem("docked-browser-theme") || "system";
+        var resolved = t;
+        if (t === "system") {
+          resolved = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
         }
+        if (resolved === "dark" || resolved === "light") {
+          document.documentElement.setAttribute("data-theme", resolved);
+        }
+        document.documentElement.setAttribute("data-theme-pref", t === "dark" || t === "light" || t === "system" ? t : "system");
       } catch (_) {}
     })();
   </script>
@@ -156,12 +161,12 @@
     }
 
     .theme-toggle button {
-      padding: 0.4rem 0.75rem;
+      padding: 0.4rem 0.7rem;
       font-size: 0.78rem;
       font-weight: 650;
       background: transparent;
       color: var(--muted);
-      min-width: 3.4rem;
+      min-width: 0;
     }
 
     .theme-toggle button.is-on {
@@ -550,6 +555,11 @@
           :class="{ 'is-on': theme === 'dark' }"
           @click="setTheme('dark')"
         >Dark</button>
+        <button
+          type="button"
+          :class="{ 'is-on': theme === 'system' }"
+          @click="setTheme('system')"
+        >System</button>
       </div>
     </header>
 
@@ -802,7 +812,8 @@
         log: "Messages appear here when you use the buttons.",
         timer: null,
         statsTimer: null,
-        theme: "light",
+        theme: "system",
+        _mq: null,
 
         get selected() {
           const name = (this.profile || "").trim();
@@ -897,10 +908,8 @@
         },
 
         init() {
-          this.applyTheme(
-            document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light",
-            false
-          );
+          const pref = document.documentElement.getAttribute("data-theme-pref") || "system";
+          this.applyTheme(pref, false);
           this.refresh().then(() => {
             if (!this.profile) {
               const live = this.liveRows[0];
@@ -914,15 +923,46 @@
           this.statsTimer = setInterval(() => this.refreshStats(), 10000);
         },
 
+        systemIsDark() {
+          return window.matchMedia("(prefers-color-scheme: dark)").matches;
+        },
+
+        resolvedTheme(pref) {
+          if (pref === "dark") return "dark";
+          if (pref === "light") return "light";
+          return this.systemIsDark() ? "dark" : "light";
+        },
+
+        bindSystemWatcher() {
+          if (this._mq) {
+            this._mq.removeEventListener("change", this._onSystemChange);
+            this._mq = null;
+          }
+          if (this.theme !== "system") return;
+          this._mq = window.matchMedia("(prefers-color-scheme: dark)");
+          this._onSystemChange = () => {
+            if (this.theme === "system") {
+              document.documentElement.setAttribute(
+                "data-theme",
+                this.systemIsDark() ? "dark" : "light"
+              );
+            }
+          };
+          this._mq.addEventListener("change", this._onSystemChange);
+        },
+
         applyTheme(theme, persistLocal) {
-          const next = theme === "dark" ? "dark" : "light";
+          const next =
+            theme === "dark" || theme === "light" || theme === "system" ? theme : "system";
           this.theme = next;
-          document.documentElement.setAttribute("data-theme", next);
+          document.documentElement.setAttribute("data-theme", this.resolvedTheme(next));
+          document.documentElement.setAttribute("data-theme-pref", next);
           if (persistLocal !== false) {
             try {
               localStorage.setItem("docked-browser-theme", next);
             } catch (_) {}
           }
+          this.bindSystemWatcher();
         },
 
         async setTheme(theme) {
@@ -956,7 +996,9 @@
           this.profiles = data.profiles || [];
           this.icons = data.icons || {};
           this.iconTick = Date.now();
-          if (data.theme === "dark" || data.theme === "light") {
+          if (data.theme_pref === "dark" || data.theme_pref === "light" || data.theme_pref === "system") {
+            this.applyTheme(data.theme_pref, true);
+          } else if (data.theme === "dark" || data.theme === "light") {
             this.applyTheme(data.theme, true);
           }
         },

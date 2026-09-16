@@ -14,7 +14,7 @@ GET  /              → HTML UI
 GET  /api/status    → {image_built, containers[], profiles[], icons{}, theme}
 GET  /api/stats     → {containers:[{profile,cpu_pct,mem_used,mem_limit,mem_pct,state}]}
 GET  /api/prefs     → {theme}
-POST /api/prefs     → {theme: light|dark}
+POST /api/prefs     → {theme: light|dark|system}
 GET  /api/icon/<p>  → custom PNG bytes (404 if none)
 POST /api/action    → {action: build|run|pause|resume|stop, profile?}
 POST /api/icon      → {profile, action: set|clear, image?: data-URL}
@@ -35,7 +35,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from control import get_theme, load_prefs, save_prefs
+from control import get_theme, prefs_payload, save_prefs
 
 # --- Constants ---------------------------------------------------------------
 GUI_DIR = Path(__file__).resolve().parent
@@ -183,7 +183,9 @@ def status_payload() -> dict:
         "containers": docker_chrome_status(),
         "profiles": profiles,
         "icons": {name: icon_path(name).is_file() for name in profiles},
-        "theme": get_theme(),
+        "theme": get_theme(),  # resolved light|dark for painting
+        "theme_pref": prefs_payload()["theme"],
+        "theme_resolved": prefs_payload()["theme_resolved"],
     }
 
 
@@ -449,7 +451,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/prefs":
-            self._send_json(200, load_prefs())
+            self._send_json(200, prefs_payload())
             return
 
         if path.startswith("/api/icon/"):

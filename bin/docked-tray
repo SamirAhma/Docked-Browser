@@ -19,7 +19,7 @@ from control import (  # noqa: E402
     TRAY_ICON,
     ensure_brand_icons,
     get_active_profile,
-    get_theme,
+    get_theme_pref,
     list_playing_profiles,
     open_focus_modal,
     open_full_gui,
@@ -115,9 +115,9 @@ class Tray:
 
         appear = Gtk.MenuItem.new_with_label("Appearance")
         appear_menu = Gtk.Menu()
-        theme = get_theme()
+        theme = get_theme_pref()
         group = []
-        for label, value in (("Light", "light"), ("Dark", "dark")):
+        for label, value in (("Light", "light"), ("Dark", "dark"), ("System", "system")):
             item = Gtk.RadioMenuItem.new_with_label(group, label)
             group = item.get_group()
             item.set_active(theme == value)
