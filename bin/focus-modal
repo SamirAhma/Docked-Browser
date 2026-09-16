@@ -1,0 +1,268 @@
+#!/usr/bin/env python3
+"""Docked Browser focus modal — dock-like profile picker."""
+from __future__ import annotations
+
+import os
+import sys
+import threading
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, GLib, Gtk, Pango
+
+GUI_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "gui")
+sys.path.insert(0, GUI_DIR)
+from control import list_playing_profiles, open_full_gui, profile_icon_path, run_cli  # noqa: E402
+
+APP_ID = "org.dockedbrowser.focus"
+
+
+def _load_pixbuf(path: str, size: int = 32):
+    from gi.repository import GdkPixbuf
+
+    return GdkPixbuf.Pixbuf.new_from_file_at_scale(path, size, size, True)
+
+
+class FocusWindow(Gtk.ApplicationWindow):
+    def __init__(self, app: Gtk.Application) -> None:
+        super().__init__(application=app, title="Docked Browser")
+        self.set_default_size(360, 420)
+        self.set_keep_above(True)
+        self.set_type_hint(Gdk.WindowTypeHint.DIALOG)
+        self.set_border_width(12)
+        self._apply_window_icon()
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self.add(outer)
+
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        title = Gtk.Label(label="Playing now")
+        title.get_style_context().add_class("title")
+        title.set_halign(Gtk.Align.START)
+        title.set_hexpand(True)
+        header.pack_start(title, True, True, 0)
+
+        refresh_btn = Gtk.Button.new_with_label("Refresh")
+        refresh_btn.connect("clicked", lambda *_: self.reload())
+        header.pack_end(refresh_btn, False, False, 0)
+        outer.pack_start(header, False, False, 0)
+
+        hint = Gtk.Label(
+            label="Only running Chromes · Click to focus · Right-click Pause / Stop"
+        )
+        hint.set_halign(Gtk.Align.START)
+        hint.set_line_wrap(True)
+        hint.get_style_context().add_class("dim-label")
+        outer.pack_start(hint, False, False, 0)
+
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scrolled.set_vexpand(True)
+        outer.pack_start(scrolled, True, True, 0)
+
+        self.list_box = Gtk.ListBox()
+        self.list_box.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.list_box.set_activate_on_single_click(True)
+        self.list_box.connect("row-activated", self.on_row_activated)
+        scrolled.add(self.list_box)
+
+        footer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        ui_btn = Gtk.Button.new_with_label("Full web UI")
+        ui_btn.connect("clicked", lambda *_: open_full_gui())
+        footer.pack_start(ui_btn, False, False, 0)
+
+        close_btn = Gtk.Button.new_with_label("Close")
+        close_btn.connect("clicked", lambda *_: self.close())
+        footer.pack_end(close_btn, False, False, 0)
+        outer.pack_start(footer, False, False, 0)
+
+        self._busy = False
+        self.reload()
+        GLib.timeout_add_seconds(3, self._tick)
+
+    def _apply_window_icon(self) -> None:
+        """Match tray: use active/first playing profile dock icon."""
+        items = list_playing_profiles()
+        path = None
+        for item in items:
+            if item.get("active") and item.get("icon"):
+                path = item["icon"]
+                break
+        if not path and items and items[0].get("icon"):
+            path = items[0]["icon"]
+        if not path:
+            from control import LAUNCHER_ICON
+
+            if LAUNCHER_ICON.is_file():
+                path = str(LAUNCHER_ICON)
+        if path and os.path.isfile(path):
+            try:
+                self.set_icon(_load_pixbuf(path, 64))
+            except Exception:
+                pass
+
+    def _tick(self) -> bool:
+        if not self._busy:
+            self.reload()
+        return True
+
+    def reload(self) -> None:
+        self._apply_window_icon()
+        for child in list(self.list_box.get_children()):
+            self.list_box.remove(child)
+
+        items = list_playing_profiles()
+        if not items:
+            row = Gtk.ListBoxRow()
+            label = Gtk.Label(
+                label="Nothing playing right now.\nOpen a profile from the dock or web UI."
+            )
+            label.set_justify(Gtk.Justification.CENTER)
+            label.set_margin_top(24)
+            label.set_margin_bottom(24)
+            row.add(label)
+            row.set_sensitive(False)
+            self.list_box.add(row)
+        else:
+            for item in items:
+                self.list_box.add(self._make_row(item))
+        self.list_box.show_all()
+
+    def _make_row(self, item: dict) -> Gtk.ListBoxRow:
+        row = Gtk.ListBoxRow()
+        row.profile = item["profile"]
+        row.state = item["state"]
+
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        box.set_margin_top(8)
+        box.set_margin_bottom(8)
+        box.set_margin_start(4)
+        box.set_margin_end(4)
+
+        icon_path = item.get("icon") or ""
+        if not icon_path:
+            p = profile_icon_path(item["profile"])
+            icon_path = str(p) if p else ""
+        if icon_path and os.path.isfile(icon_path):
+            try:
+                img = Gtk.Image.new_from_pixbuf(_load_pixbuf(icon_path, 32))
+            except Exception:
+                img = Gtk.Image.new_from_icon_name("web-browser", Gtk.IconSize.DND)
+        else:
+            img = Gtk.Image.new_from_icon_name("web-browser", Gtk.IconSize.DND)
+        box.pack_start(img, False, False, 0)
+
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        name = Gtk.Label(label=item["profile"])
+        name.set_halign(Gtk.Align.START)
+        name.set_ellipsize(Pango.EllipsizeMode.END)
+        if item.get("active"):
+            name.set_markup(f"<b>{GLib.markup_escape_text(item['profile'])}</b>  · playing")
+        text.pack_start(name, False, False, 0)
+
+        state_label = Gtk.Label(label=item["state"])
+        state_label.set_halign(Gtk.Align.START)
+        state_label.get_style_context().add_class("dim-label")
+        text.pack_start(state_label, False, False, 0)
+        box.pack_start(text, True, True, 0)
+
+        dot = Gtk.Label()
+        color = {"running": "#15803d", "paused": "#b45309", "stopped": "#94a3b8"}.get(
+            item["state"], "#94a3b8"
+        )
+        dot.set_markup(f'<span foreground="{color}" size="x-large">●</span>')
+        box.pack_end(dot, False, False, 0)
+
+        row.add(box)
+        row.connect("button-press-event", self.on_row_button)
+        return row
+
+    def on_row_button(self, row: Gtk.ListBoxRow, event: Gdk.EventButton) -> bool:
+        if event.button == 3:
+            self._popup_menu(row, event)
+            return True
+        return False
+
+    def _popup_menu(self, row: Gtk.ListBoxRow, event: Gdk.EventButton) -> None:
+        menu = Gtk.Menu()
+        profile = row.profile
+        state = row.state
+
+        def add(label: str, action: str, sensitive: bool) -> None:
+            item = Gtk.MenuItem.new_with_label(label)
+            item.set_sensitive(sensitive)
+            item.connect("activate", lambda *_: self._run_action(action, profile))
+            menu.append(item)
+
+        add("Open / Focus", "activate", True)
+        add("Pause", "pause", True)
+        add("Stop (close)", "stop", True)
+        menu.show_all()
+        menu.popup_at_pointer(event)
+
+    def on_row_activated(self, _list: Gtk.ListBox, row: Gtk.ListBoxRow) -> None:
+        if not hasattr(row, "profile"):
+            return
+        self._run_action("activate", row.profile)
+
+    def _run_action(self, action: str, profile: str) -> None:
+        if self._busy:
+            return
+        self._busy = True
+        self.get_window().set_cursor(Gdk.Cursor.new_from_name(self.get_display(), "wait"))
+
+        def work() -> None:
+            result = run_cli(action, profile)
+
+            def done() -> None:
+                self._busy = False
+                self.get_window().set_cursor(None)
+                self.reload()
+                if not result["ok"] and action != "activate":
+                    dlg = Gtk.MessageDialog(
+                        transient_for=self,
+                        flags=0,
+                        message_type=Gtk.MessageType.WARNING,
+                        buttons=Gtk.ButtonsType.OK,
+                        text=result["output"][:500] or "Action failed",
+                    )
+                    dlg.run()
+                    dlg.destroy()
+                if action in {"activate", "run", "resume"} and result["ok"]:
+                    # Keep modal open so user can switch again; optional close:
+                    pass
+
+            GLib.idle_add(done)
+
+        threading.Thread(target=work, daemon=True).start()
+
+
+class FocusApp(Gtk.Application):
+    def __init__(self) -> None:
+        super().__init__(application_id=APP_ID)
+        self._window: FocusWindow | None = None
+
+    def do_activate(self) -> None:
+        if self._window is None:
+            self._window = FocusWindow(self)
+            self._window.show_all()
+        else:
+            self._window.present()
+
+
+def main() -> int:
+    # Session defaults for GUI launched from hotkey/autostart
+    os.environ.setdefault("DISPLAY", ":0")
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    os.environ.setdefault("XDG_RUNTIME_DIR", runtime)
+    if not os.environ.get("WAYLAND_DISPLAY"):
+        sock = os.path.join(runtime, "wayland-0")
+        if os.path.exists(sock):
+            os.environ["WAYLAND_DISPLAY"] = "wayland-0"
+    return FocusApp().run(sys.argv)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

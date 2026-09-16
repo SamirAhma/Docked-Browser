@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Install a GNOME keyboard shortcut that opens the Docked Browser focus modal.
+# Default chord: Super+Shift+D
+set -euo pipefail
+
+BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
+FOCUS_MODAL="$BIN_DIR/focus-modal"
+NAME="docked-browser-focus"
+BINDING="<Super><Shift>d"
+OUR_PATH="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/${NAME}/"
+SCHEMA="org.gnome.settings-daemon.plugins.media-keys"
+
+if ! command -v gsettings >/dev/null 2>&1; then
+  echo "gsettings not found. Bind manually in Settings → Keyboard → Custom Shortcuts:"
+  echo "  Name: Docked Browser Focus"
+  echo "  Command: $FOCUS_MODAL"
+  exit 1
+fi
+
+NEW_LIST="$(
+  python3 - "$OUR_PATH" <<'PY'
+import ast, subprocess, sys
+our = sys.argv[1]
+try:
+    raw = subprocess.check_output(
+        ["gsettings", "get", "org.gnome.settings-daemon.plugins.media-keys", "custom-keybindings"],
+        text=True,
+    ).strip()
+    items = list(ast.literal_eval(raw))
+except Exception:
+    items = []
+if our not in items:
+    items.append(our)
+print("[" + ", ".join("'" + i + "'" for i in items) + "]")
+PY
+)"
+
+gsettings set "$SCHEMA" custom-keybindings "$NEW_LIST"
+gsettings set "${SCHEMA}.custom-keybinding:${OUR_PATH}" name "Docked Browser Focus"
+gsettings set "${SCHEMA}.custom-keybinding:${OUR_PATH}" command "$FOCUS_MODAL"
+gsettings set "${SCHEMA}.custom-keybinding:${OUR_PATH}" binding "$BINDING"
+
+echo "Hotkey installed: Super+Shift+D → focus modal"
+echo "Change it anytime in Settings → Keyboard → Custom Shortcuts."

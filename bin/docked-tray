@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""Docked Browser tray indicator — shows playing profiles; icons match the modal/dock."""
+from __future__ import annotations
+
+import os
+import sys
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("AyatanaAppIndicator3", "0.1")
+from gi.repository import AyatanaAppIndicator3 as AppIndicator3
+from gi.repository import GdkPixbuf, GLib, Gtk
+
+GUI_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "gui")
+sys.path.insert(0, GUI_DIR)
+from control import (  # noqa: E402
+    LAUNCHER_ICON,
+    get_active_profile,
+    list_playing_profiles,
+    open_focus_modal,
+    open_full_gui,
+    playing_tray_icon,
+    profile_icon_path,
+    run_cli,
+)
+
+APP_ID = "org.dockedbrowser.tray"
+
+
+def _menu_image(path: str | None, size: int = 22) -> Gtk.Image:
+    if path and os.path.isfile(path):
+        try:
+            pix = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, size, size, True)
+            return Gtk.Image.new_from_pixbuf(pix)
+        except Exception:
+            pass
+    return Gtk.Image.new_from_icon_name("web-browser", Gtk.IconSize.MENU)
+
+
+class Tray:
+    def __init__(self) -> None:
+        icon = str(playing_tray_icon()) if playing_tray_icon().is_file() else "web-browser"
+        self.ind = AppIndicator3.Indicator.new(
+            APP_ID,
+            icon,
+            AppIndicator3.IndicatorCategory.APPLICATION_STATUS,
+        )
+        self.ind.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
+        self.ind.set_title("Docked Browser")
+        self.menu = Gtk.Menu()
+        self.ind.set_menu(self.menu)
+        self.ind.set_secondary_activate_target(Gtk.MenuItem())
+        self._rebuild_menu()
+        GLib.timeout_add_seconds(4, self._tick)
+
+    def _tick(self) -> bool:
+        self._rebuild_menu()
+        return True
+
+    def _rebuild_menu(self) -> None:
+        for child in list(self.menu.get_children()):
+            self.menu.remove(child)
+
+        playing = list_playing_profiles()
+        active = get_active_profile()
+        current = next((p["profile"] for p in playing if p.get("active")), None)
+        if not current and playing:
+            current = playing[0]["profile"]
+        if current and active and current not in {p["profile"] for p in playing}:
+            current = playing[0]["profile"] if playing else ""
+
+        head = Gtk.MenuItem.new_with_label(
+            f"Playing: {current}" if current else "Playing: (none)"
+        )
+        head.set_sensitive(False)
+        self.menu.append(head)
+        self.menu.append(Gtk.SeparatorMenuItem())
+
+        open_item = Gtk.MenuItem.new_with_label("Open focus modal…")
+        open_item.connect("activate", lambda *_: open_focus_modal())
+        self.menu.append(open_item)
+        self.menu.append(Gtk.SeparatorMenuItem())
+
+        if not playing:
+            empty = Gtk.MenuItem.new_with_label("(nothing playing)")
+            empty.set_sensitive(False)
+            self.menu.append(empty)
+        else:
+            for item in playing:
+                label = item["profile"]
+                if item.get("active"):
+                    label = f"▶ {label}"
+                icon_path = item.get("icon") or ""
+                if not icon_path:
+                    p = profile_icon_path(item["profile"])
+                    icon_path = str(p) if p else ""
+                mi = Gtk.ImageMenuItem.new_with_label(label)
+                mi.set_image(_menu_image(icon_path or None))
+                mi.set_always_show_image(True)
+                submenu = Gtk.Menu()
+                self._fill_profile_menu(submenu, item["profile"])
+                mi.set_submenu(submenu)
+                self.menu.append(mi)
+
+        self.menu.append(Gtk.SeparatorMenuItem())
+        ui = Gtk.MenuItem.new_with_label("Full web UI")
+        ui.connect("activate", lambda *_: open_full_gui())
+        self.menu.append(ui)
+
+        quit_item = Gtk.MenuItem.new_with_label("Quit tray")
+        quit_item.connect("activate", lambda *_: Gtk.main_quit())
+        self.menu.append(quit_item)
+        self.menu.show_all()
+
+        if current:
+            self.ind.set_label(current[:16], "")
+            self.ind.set_title(f"Docked Browser — {current}")
+        else:
+            self.ind.set_label("", "")
+            self.ind.set_title("Docked Browser")
+
+        # Same file the modal uses for that profile (dock PNG)
+        icon = playing_tray_icon()
+        if icon.is_file():
+            self.ind.set_icon(str(icon))
+        elif LAUNCHER_ICON.is_file():
+            self.ind.set_icon(str(LAUNCHER_ICON))
+
+    def _fill_profile_menu(self, menu: Gtk.Menu, profile: str) -> None:
+        def add(label: str, action: str) -> None:
+            item = Gtk.MenuItem.new_with_label(label)
+
+            def on_activate(_w: Gtk.MenuItem) -> None:
+                run_cli(action, profile)
+                self._rebuild_menu()
+
+            item.connect("activate", on_activate)
+            menu.append(item)
+
+        add("Open / Focus", "activate")
+        add("Pause", "pause")
+        add("Stop (close)", "stop")
+
+
+def main() -> int:
+    os.environ.setdefault("DISPLAY", ":0")
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    os.environ.setdefault("XDG_RUNTIME_DIR", runtime)
+    if not os.environ.get("WAYLAND_DISPLAY"):
+        sock = os.path.join(runtime, "wayland-0")
+        if os.path.exists(sock):
+            os.environ["WAYLAND_DISPLAY"] = "wayland-0"
+
+    cli = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docked-browser")
+    if not LAUNCHER_ICON.is_file() and os.path.isfile(cli):
+        os.system(f'"{cli}" refresh-dock >/dev/null 2>&1')
+
+    Tray()
+    Gtk.main()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

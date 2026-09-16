@@ -1,14 +1,11 @@
 # Template only — do not hardcode a username or home path here.
-# Install a real launcher with: ./bin/install-autostart
-#
-# That writes ~/.config/autostart/docked-browser.desktop with absolute
-# paths for *this* machine (local only; not committed).
+# Prefer: ./bin/install-autostart
 [Desktop Entry]
 Type=Application
 Version=1.0
 Name=Docked Browser
-Comment=Start Docked Browser web UI on login
-Exec=REPLACE_WITH_REPO/bin/start-gui
+Comment=Start Docked Browser tray + UI on login
+Exec=REPLACE_WITH_REPO/bin/docked-tray
 Path=REPLACE_WITH_REPO
 Terminal=false
 X-GNOME-Autostart-enabled=true

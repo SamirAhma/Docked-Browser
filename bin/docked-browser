@@ -10,10 +10,10 @@
 #
 # Repo layout: bin/ (this file) · gui/ (server + icons) · Dockerfile at root
 #
-# Commands: build | run | activate | pause | resume | stop | refresh-dock
-# Profile data: ~/.config/docker-chrome-profiles/<name>/   (unchanged on purpose)
-# Container:    chrome-<name>                              (unchanged on purpose)
-# Dock class:   docked-browser-<name>  (StartupWMClass / --class)
+# Commands: build | run | activate | pause | resume | stop | refresh-dock | status | focus
+# Profile data: ~/.config/docker-chrome-profiles/<name>/
+# Container:    chrome-<name>
+# Dock class:   docked-browser-<name>  (per-profile StartupWMClass / --class)
 # =============================================================================
 set -euo pipefail
 
@@ -24,9 +24,12 @@ BIN_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 ROOT_DIR="$(cd "$BIN_DIR/.." && pwd)"          # repo root (Dockerfile lives here)
 GUI_DIR="$ROOT_DIR/gui"
 DOCK_ICON_PY="$GUI_DIR/dock_icon.py"
+FOCUS_MODAL="$BIN_DIR/focus-modal"
 DOWNLOADS_DIR="${HOME}/Downloads"
 DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 ICON_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/docked-browser/icons"
+STATE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/docked-browser"
+ACTIVE_FILE="$STATE_DIR/active-profile"
 
 # --- Profile context (set by set_profile) ------------------------------------
 PROFILE_NAME=""
@@ -43,23 +46,25 @@ Usage: $0 <command> [profile_name]
 Commands:
   build                 Build the Docker image (${IMAGE_NAME})
   run [name]            Start Chrome for a profile (default: default)
-  activate [name]       Dock click handler: resume / focus / or run
+  activate [name]       Resume / focus / or run (dock icon click)
   pause [name]          docker pause  (frozen in RAM, almost no CPU)
   resume [name]         docker unpause
   stop [name]           Remove the container
-  refresh-dock [name]   Rebuild .desktop + static dock icon
+  refresh-dock [name]   Rebuild .desktop + icon (all profiles if name omitted)
+  focus                 Open the focus modal (optional picker)
+  status                Print profile status as JSON
 
 Examples:
   $0 build
   $0 run work
   $0 pause work
+  $0 focus
 EOF
   exit 1
 }
 
 set_profile() {
   PROFILE_NAME="${1:-default}"
-  # Keep names filesystem / docker / WMClass safe
   if [[ ! "$PROFILE_NAME" =~ ^[a-zA-Z0-9_-]{1,64}$ ]]; then
     echo "Invalid profile name: ${PROFILE_NAME}" >&2
     echo "Use letters, numbers, _ or - (max 64)." >&2
@@ -70,6 +75,17 @@ set_profile() {
   APP_CLASS="docked-browser-${PROFILE_NAME}"
   DESKTOP_FILE="${DESKTOP_DIR}/${APP_CLASS}.desktop"
   ICON_FILE="${ICON_DIR}/${APP_CLASS}.png"
+}
+
+remember_active() {
+  mkdir -p "$STATE_DIR"
+  printf '%s\n' "$PROFILE_NAME" > "$ACTIVE_FILE"
+}
+
+profile_color() {
+  local hash
+  hash="$(printf '%s' "$PROFILE_NAME" | md5sum | cut -c1-6)"
+  printf '#%s' "$hash"
 }
 
 # --- Desktop session env (GUI may start without a full login environment) ----
@@ -107,21 +123,14 @@ notify() {
   fi
 }
 
-profile_color() {
-  # Stable hex from profile name (used for fallback name-badge icons)
-  local hash
-  hash="$(printf '%s' "$PROFILE_NAME" | md5sum | cut -c1-6)"
-  printf '#%s' "$hash"
-}
-
-# --- Dock / .desktop ---------------------------------------------------------
-# HARD RULES (do not re-introduce pause-dimming or hicolor absolute paths):
-#   • GNOME caches the window icon at open time → Icon= swaps won't update live windows
-#   • Absolute Icon= under ~/.local/share/icons/hicolor often shows blank
-#   • Never invent a partial hicolor/index.theme (breaks system icons)
-#   • Icons: ~/.local/share/docked-browser/icons/<class>.png (static only)
+# --- Per-profile dock entry (click opens Chrome; no right-click actions) -----
+# HARD RULES:
+#   • One .desktop + icon per profile (pin each in the Dash if you want)
+#   • No Actions= menu — click only → activate
+#   • Never invent a partial hicolor/index.theme
+#   • Icons live under ~/.local/share/docked-browser/icons/ (not hicolor)
 install_dock_entry() {
-  mkdir -p "$DESKTOP_DIR" "$ICON_DIR" "$DATA_DIR"
+  mkdir -p "$DESKTOP_DIR" "$ICON_DIR" "$STATE_DIR" "$DATA_DIR"
   local color title custom_icon
   color="$(profile_color)"
   title="Docked · ${PROFILE_NAME}"
@@ -129,14 +138,16 @@ install_dock_entry() {
 
   python3 "$DOCK_ICON_PY" "$PROFILE_NAME" "$color" "$custom_icon" "$ICON_FILE"
 
-  # Drop leftovers from older names / experiments
+  # Drop legacy hicolor / chrome-cockpit leftovers for this profile
   rm -f \
     "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/128x128/apps/${APP_CLASS}"* \
     "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/128x128/apps/chrome-cockpit-${PROFILE_NAME}"* \
     "${DESKTOP_DIR}/chrome-cockpit-${PROFILE_NAME}.desktop" \
-    "${ICON_DIR}/${APP_CLASS}-paused.png" \
     "${XDG_DATA_HOME:-$HOME/.local/share}/chrome-cockpit/icons/chrome-cockpit-${PROFILE_NAME}"* \
     2>/dev/null || true
+
+  # Also remove the old shared "Docked Browser" launcher if present
+  rm -f "${DESKTOP_DIR}/docked-browser.desktop" 2>/dev/null || true
 
   cat > "$DESKTOP_FILE" <<EOF
 [Desktop Entry]
@@ -144,26 +155,13 @@ Version=1.0
 Type=Application
 Name=$title
 GenericName=Web Browser
-Comment=$title
+Comment=Open the “${PROFILE_NAME}” Chrome profile
 Exec=$SCRIPT_PATH activate $PROFILE_NAME
 Icon=$ICON_FILE
 Terminal=false
 Categories=Network;WebBrowser;
 StartupNotify=true
 StartupWMClass=$APP_CLASS
-Actions=Stop;Pause;Resume;
-
-[Desktop Action Stop]
-Name=Stop profile
-Exec=$SCRIPT_PATH stop $PROFILE_NAME
-
-[Desktop Action Pause]
-Name=Pause profile
-Exec=$SCRIPT_PATH pause $PROFILE_NAME
-
-[Desktop Action Resume]
-Name=Resume profile
-Exec=$SCRIPT_PATH resume $PROFILE_NAME
 EOF
 
   touch "$DESKTOP_FILE"
@@ -248,6 +246,7 @@ cmd_run() {
 
   install_dock_entry
   seed_chrome_fonts
+  remember_active
 
   run_args=(
     --name "$CONTAINER_NAME"
@@ -344,30 +343,20 @@ cmd_run() {
     exit 1
   fi
   echo "Running: $CONTAINER_NAME"
-  install_dock_entry
+  remember_active
 }
 
 cmd_activate() {
-  # Safer dock click: don't always destroy/recreate
+  # Safer than always destroy/recreate
   ensure_session_env
   if container_is_paused; then
-    notify "“${PROFILE_NAME}” is paused" "The browser is sleeping. Choose Resume to wake it."
-    if command -v zenity >/dev/null 2>&1; then
-        if zenity --question --title="Docked Browser" \
-        --text="“${PROFILE_NAME}” is paused (frozen).\n\nResume it now?" \
-        --ok-label="Resume" --cancel-label="Leave paused" 2>/dev/null; then
-        docker unpause "$CONTAINER_NAME"
-        notify "Resumed “${PROFILE_NAME}”"
-        echo "Resumed: $PROFILE_NAME"
-      else
-        echo "Left paused: $PROFILE_NAME"
-      fi
-    else
-      echo "Profile is paused. Run: $0 resume $PROFILE_NAME"
-      exit 1
-    fi
+    docker unpause "$CONTAINER_NAME"
+    remember_active
+    notify "Resumed “${PROFILE_NAME}”"
+    echo "Resumed: $PROFILE_NAME"
   elif container_is_running; then
-    notify "“${PROFILE_NAME}” is already open" "Switch to its window from the dock or Alt+Tab."
+    remember_active
+    notify "“${PROFILE_NAME}” is already open" "Switch to its window (Alt+Tab) or use the focus modal."
     echo "Already running: $PROFILE_NAME"
   else
     exec "$SCRIPT_PATH" run "$PROFILE_NAME"
@@ -377,12 +366,13 @@ cmd_activate() {
 cmd_pause() {
   echo "Pausing profile: $PROFILE_NAME (CPU ~0%, RAM kept)..."
   docker pause "$CONTAINER_NAME"
-  notify "Paused “${PROFILE_NAME}”" "Frozen in RAM. Resume from Cockpit or the dock menu."
+  notify "Paused “${PROFILE_NAME}”" "Frozen in RAM. Resume from the focus modal or tray."
 }
 
 cmd_resume() {
   echo "Resuming profile: $PROFILE_NAME..."
   docker unpause "$CONTAINER_NAME"
+  remember_active
   notify "Resumed “${PROFILE_NAME}”"
 }
 
@@ -396,6 +386,46 @@ cmd_refresh_dock() {
   install_dock_entry
 }
 
+cmd_refresh_dock_all() {
+  local names=()
+  local d
+  if [[ -d "${HOME}/.config/docker-chrome-profiles" ]]; then
+    for d in "${HOME}/.config/docker-chrome-profiles"/*; do
+      [[ -d "$d" ]] || continue
+      names+=("$(basename "$d")")
+    done
+  fi
+  # Also include running containers
+  local line name
+  while IFS= read -r line; do
+    [[ "$line" == chrome-* ]] || continue
+    name="${line#chrome-}"
+    names+=("$name")
+  done < <(docker ps -a --filter 'name=chrome-' --format '{{.Names}}' 2>/dev/null || true)
+
+  if ((${#names[@]} == 0)); then
+    set_profile default
+    install_dock_entry
+    return
+  fi
+
+  # Unique names
+  printf '%s\n' "${names[@]}" | sort -u | while read -r name; do
+    [[ "$name" =~ ^[a-zA-Z0-9_-]{1,64}$ ]] || continue
+    set_profile "$name"
+    install_dock_entry
+  done
+}
+
+cmd_focus() {
+  ensure_session_env
+  exec "$FOCUS_MODAL"
+}
+
+cmd_status() {
+  PYTHONPATH="$GUI_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 -c 'from control import status_json; print(status_json())'
+}
+
 # --- Dispatch ----------------------------------------------------------------
 main() {
   local cmd="${1:-}"
@@ -405,7 +435,21 @@ main() {
     build)
       cmd_build
       ;;
-    run|activate|pause|resume|stop|refresh-dock)
+    focus)
+      cmd_focus
+      ;;
+    status)
+      cmd_status
+      ;;
+    refresh-dock)
+      if [[ -n "${2:-}" ]]; then
+        set_profile "$2"
+        cmd_refresh_dock
+      else
+        cmd_refresh_dock_all
+      fi
+      ;;
+    run|activate|pause|resume|stop)
       set_profile "${2:-default}"
       case "$cmd" in
         run)           cmd_run ;;
@@ -413,7 +457,6 @@ main() {
         pause)         cmd_pause ;;
         resume)        cmd_resume ;;
         stop)          cmd_stop ;;
-        refresh-dock)  cmd_refresh_dock ;;
       esac
       ;;
     -h|--help|help)
