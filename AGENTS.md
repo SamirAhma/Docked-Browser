@@ -11,7 +11,7 @@ web UI / tray / focus-modal ──────────► bin/docked-browser
 
 - Keep stdlib `http.server` for the full UI (no Flask).
 - Lifecycle goes through `bin/docked-browser`.
-- **Per-profile** WM class + dock icon. Click opens that profile. No `.desktop` Actions menu.
+- **Per-profile** WM class + dock icon. Click opens that profile. Right-click Actions rewrite with Docker state (only valid options).
 
 ## Naming
 
@@ -32,6 +32,7 @@ web UI / tray / focus-modal ──────────► bin/docked-browser
 3. **No host NVIDIA `.so` bind-mounts** into the container.
 4. **Pause does not free RAM.**
 5. Optional focus modal/tray/hotkey are extras — dock click remains the primary UX.
+6. Dock right-click `Actions=` are rewritten on lifecycle changes — only valid items for current Docker state.
 
 ## CLI
 

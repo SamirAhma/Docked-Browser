@@ -44,7 +44,7 @@ Target host: Linux + Docker (tested on Lubuntu / GNOME Wayland + NVIDIA).
 # 4) Optional: tray + hotkey + web UI
 ./bin/install-autostart
 ./bin/install-hotkey          # Super+Shift+D → focus modal
-./bin/start-gui               # http://127.0.0.1:8787
+./bin/start-gui               # http://127.0.0.1:8787yyy
 ```
 
 CLI:
@@ -58,7 +58,7 @@ CLI:
 ./bin/docked-browser focus             # optional picker
 ```
 
-**Dock:** each profile is its own app (`Docked · work`, etc.). Click = open that Chrome. No right-click actions — pause/resume from the web UI, tray, or CLI. Pin the ones you use from the app grid / Dash.
+**Dock:** each profile is its own app (`Docked · work`, etc.). Left-click = open/focus. Right-click / long-press shows only valid actions for the current state (Open, or Pause/Close, or Resume/Close). Pin the ones you use from the app grid / Dash.
 
 ## Layout
 
@@ -114,7 +114,7 @@ Naming:
 - Docker
 - Python 3 + Pillow
 - Optional for modal/tray: GTK 3 + Ayatana AppIndicator
-- Optional: `notify-send`, NVIDIA Container Toolkit
+- Optional: NVIDIA Container Toolkit
 
 ## Docs for contributors / AIs
 

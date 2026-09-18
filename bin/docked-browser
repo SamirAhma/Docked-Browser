@@ -118,21 +118,15 @@ container_is_running() {
   [[ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null || echo false)" == "true" ]]
 }
 
-notify() {
-  if command -v notify-send >/dev/null 2>&1; then
-    notify-send --app-name="Docked Browser" "$@" >/dev/null 2>&1 || true
-  fi
-}
-
-# --- Per-profile dock entry (click opens Chrome; no right-click actions) -----
+# --- Per-profile dock entry --------------------------------------------------
 # HARD RULES:
 #   • One .desktop + icon per profile (pin each in the Dash if you want)
-#   • No Actions= menu — click only → activate
+#   • Left-click → activate; right-click Actions rewrite with state (only valid)
 #   • Never invent a partial hicolor/index.theme
 #   • Icons live under ~/.local/share/docked-browser/icons/ (not hicolor)
 install_dock_entry() {
   mkdir -p "$DESKTOP_DIR" "$ICON_DIR" "$STATE_DIR" "$DATA_DIR"
-  local color title custom_icon
+  local color title custom_icon status actions_csv actions_block
   color="$(profile_color)"
   title="Docked · ${PROFILE_NAME}"
   custom_icon="${DATA_DIR}/dock-icon.png"
@@ -150,6 +144,51 @@ install_dock_entry() {
   # Also remove the old shared "Docked Browser" launcher if present
   rm -f "${DESKTOP_DIR}/docked-browser.desktop" 2>/dev/null || true
 
+  # Dynamic right-click menu: only actions that make sense right now
+  status="$(container_status)"
+  actions_csv=""
+  actions_block=""
+  case "$status" in
+    running)
+      actions_csv="pause;close;"
+      actions_block=$(cat <<EOF
+
+[Desktop Action pause]
+Name=Pause
+Exec=$SCRIPT_PATH pause $PROFILE_NAME
+
+[Desktop Action close]
+Name=Close
+Exec=$SCRIPT_PATH stop $PROFILE_NAME
+EOF
+)
+      ;;
+    paused)
+      actions_csv="resume;close;"
+      actions_block=$(cat <<EOF
+
+[Desktop Action resume]
+Name=Resume
+Exec=$SCRIPT_PATH resume $PROFILE_NAME
+
+[Desktop Action close]
+Name=Close
+Exec=$SCRIPT_PATH stop $PROFILE_NAME
+EOF
+)
+      ;;
+    *)
+      actions_csv="open;"
+      actions_block=$(cat <<EOF
+
+[Desktop Action open]
+Name=Open
+Exec=$SCRIPT_PATH run $PROFILE_NAME
+EOF
+)
+      ;;
+  esac
+
   cat > "$DESKTOP_FILE" <<EOF
 [Desktop Entry]
 Version=1.0
@@ -163,6 +202,9 @@ Terminal=false
 Categories=Network;WebBrowser;
 StartupNotify=true
 StartupWMClass=$APP_CLASS
+NoDisplay=true
+Actions=$actions_csv
+${actions_block}
 EOF
 
   touch "$DESKTOP_FILE"
@@ -170,7 +212,7 @@ EOF
     update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true
   fi
 
-  echo "Dock entry: $title"
+  echo "Dock entry: $title (menu: ${actions_csv%;})"
   echo "Icon file: $ICON_FILE"
 }
 
@@ -276,7 +318,6 @@ cmd_run() {
     --no-first-run
     --no-default-browser-check
     --disable-dev-shm-usage
-    --no-sandbox
     --password-store=basic
     --start-maximized
     --new-window
@@ -351,6 +392,7 @@ cmd_run() {
   fi
   echo "Running: $CONTAINER_NAME"
   remember_active
+  install_dock_entry
 }
 
 cmd_activate() {
@@ -359,12 +401,12 @@ cmd_activate() {
   if container_is_paused; then
     docker unpause "$CONTAINER_NAME"
     remember_active
-    notify "Resumed “${PROFILE_NAME}”"
     echo "Resumed: $PROFILE_NAME"
+    install_dock_entry
   elif container_is_running; then
     remember_active
-    notify "“${PROFILE_NAME}” is already open" "Switch to its window (Alt+Tab) or use the focus modal."
     echo "Already running: $PROFILE_NAME"
+    install_dock_entry
   else
     exec "$SCRIPT_PATH" run "$PROFILE_NAME"
   fi
@@ -373,14 +415,14 @@ cmd_activate() {
 cmd_pause() {
   echo "Pausing profile: $PROFILE_NAME (CPU ~0%, RAM kept)..."
   docker pause "$CONTAINER_NAME"
-  notify "Paused “${PROFILE_NAME}”" "Frozen in RAM. Resume from the focus modal or tray."
+  install_dock_entry
 }
 
 cmd_resume() {
   echo "Resuming profile: $PROFILE_NAME..."
   docker unpause "$CONTAINER_NAME"
   remember_active
-  notify "Resumed “${PROFILE_NAME}”"
+  install_dock_entry
 }
 
 cmd_stop() {
