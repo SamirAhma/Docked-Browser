@@ -1,24 +1,48 @@
 #!/usr/bin/env bash
-# Install a GNOME keyboard shortcut that opens the Docked Browser focus modal.
+# Install a GNOME or Cinnamon keyboard shortcut that opens the Docked Browser focus modal.
 # Default chord: Super+Shift+D
+#
+# GNOME reads org.gnome.settings-daemon.plugins.media-keys custom-keybindings
+# (binding is a single string). Cinnamon reads org.cinnamon.desktop.keybindings
+# custom-list (names like custom0; binding is a string array) and reloads only
+# when that list changes, so the installer toggles __dummy__ after writing keys.
 set -euo pipefail
 
 BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
 FOCUS_MODAL="$BIN_DIR/focus-modal"
-NAME="docked-browser-focus"
 BINDING="<Super><Shift>d"
-OUR_PATH="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/${NAME}/"
-SCHEMA="org.gnome.settings-daemon.plugins.media-keys"
+DISPLAY_NAME="Docked Browser Focus"
+
+GNOME_NAME="docked-browser-focus"
+GNOME_PATH="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/${GNOME_NAME}/"
+GNOME_SCHEMA="org.gnome.settings-daemon.plugins.media-keys"
+
+CINNAMON_SCHEMA="org.cinnamon.desktop.keybindings"
+CINNAMON_CHILD="org.cinnamon.desktop.keybindings.custom-keybinding"
+CINNAMON_BASE="/org/cinnamon/desktop/keybindings/custom-keybindings"
+
+schema_exists() {
+  gsettings list-schemas 2>/dev/null | grep -qx "$1"
+}
+
+manual_instructions() {
+  echo "Bind manually in Settings → Keyboard → Custom Shortcuts:"
+  echo "  Name: $DISPLAY_NAME"
+  echo "  Command: $FOCUS_MODAL"
+  echo "  Shortcut: Super+Shift+D"
+}
 
 if ! command -v gsettings >/dev/null 2>&1; then
-  echo "gsettings not found. Bind manually in Settings → Keyboard → Custom Shortcuts:"
-  echo "  Name: Docked Browser Focus"
-  echo "  Command: $FOCUS_MODAL"
+  echo "gsettings not found."
+  manual_instructions
   exit 1
 fi
 
-NEW_LIST="$(
-  python3 - "$OUR_PATH" <<'PY'
+installed=0
+
+if schema_exists "$GNOME_SCHEMA"; then
+  NEW_LIST="$(
+    python3 - "$GNOME_PATH" <<'PY'
 import ast, subprocess, sys
 our = sys.argv[1]
 try:
@@ -33,12 +57,87 @@ if our not in items:
     items.append(our)
 print("[" + ", ".join("'" + i + "'" for i in items) + "]")
 PY
-)"
+  )"
 
-gsettings set "$SCHEMA" custom-keybindings "$NEW_LIST"
-gsettings set "${SCHEMA}.custom-keybinding:${OUR_PATH}" name "Docked Browser Focus"
-gsettings set "${SCHEMA}.custom-keybinding:${OUR_PATH}" command "$FOCUS_MODAL"
-gsettings set "${SCHEMA}.custom-keybinding:${OUR_PATH}" binding "$BINDING"
+  gsettings set "$GNOME_SCHEMA" custom-keybindings "$NEW_LIST"
+  gsettings set "${GNOME_SCHEMA}.custom-keybinding:${GNOME_PATH}" name "$DISPLAY_NAME"
+  gsettings set "${GNOME_SCHEMA}.custom-keybinding:${GNOME_PATH}" command "$FOCUS_MODAL"
+  gsettings set "${GNOME_SCHEMA}.custom-keybinding:${GNOME_PATH}" binding "$BINDING"
+  installed=1
+fi
+
+if schema_exists "$CINNAMON_SCHEMA"; then
+  mapfile -t cinnamon_lines < <(
+    python3 - "$FOCUS_MODAL" <<'PY'
+import ast, subprocess, sys
+
+focus = sys.argv[1]
+schema = "org.cinnamon.desktop.keybindings"
+child = "org.cinnamon.desktop.keybindings.custom-keybinding"
+base = "/org/cinnamon/desktop/keybindings/custom-keybindings"
+
+def gget(*args):
+    return subprocess.check_output(["gsettings", "get", *args], text=True).strip()
+
+def parse_strv(raw):
+    raw = raw.strip()
+    if raw.startswith("@as "):
+        raw = raw[4:].strip()
+    if raw == "[]":
+        return []
+    return list(ast.literal_eval(raw))
+
+def parse_string(raw):
+    return ast.literal_eval(raw.strip())
+
+def fmt(items):
+    return "[" + ", ".join("'" + i + "'" for i in items) + "]"
+
+items = [i for i in parse_strv(gget(schema, "custom-list")) if i != "__dummy__"]
+chosen = None
+for name in items:
+    path = f"{base}/{name}/"
+    try:
+        command = parse_string(gget(f"{child}:{path}", "command"))
+    except Exception:
+        continue
+    if command == focus:
+        chosen = name
+        break
+
+if chosen is None:
+    used = set(items)
+    n = 0
+    while f"custom{n}" in used:
+        n += 1
+    chosen = f"custom{n}"
+    items.append(chosen)
+
+print(chosen)
+print(fmt(items))
+print(fmt(items + ["__dummy__"]))
+PY
+  )
+
+  CIN_NAME="${cinnamon_lines[0]}"
+  CIN_REAL="${cinnamon_lines[1]}"
+  CIN_DUMMY="${cinnamon_lines[2]}"
+  CIN_PATH="${CINNAMON_BASE}/${CIN_NAME}/"
+
+  gsettings set "${CINNAMON_CHILD}:${CIN_PATH}" name "$DISPLAY_NAME"
+  gsettings set "${CINNAMON_CHILD}:${CIN_PATH}" command "$FOCUS_MODAL"
+  gsettings set "${CINNAMON_CHILD}:${CIN_PATH}" binding "['${BINDING}']"
+  # Cinnamon reloads custom shortcuts only when custom-list changes.
+  gsettings set "$CINNAMON_SCHEMA" custom-list "$CIN_DUMMY"
+  gsettings set "$CINNAMON_SCHEMA" custom-list "$CIN_REAL"
+  installed=1
+fi
+
+if [[ "$installed" -eq 0 ]]; then
+  echo "Neither GNOME nor Cinnamon keyboard schemas were found."
+  manual_instructions
+  exit 1
+fi
 
 echo "Hotkey installed: Super+Shift+D → focus modal"
 echo "Change it anytime in Settings → Keyboard → Custom Shortcuts."

@@ -23,5 +23,8 @@ if [[ -z "${WAYLAND_DISPLAY:-}" && -S "${XDG_RUNTIME_DIR}/wayland-0" ]]; then
   export WAYLAND_DISPLAY=wayland-0
 fi
 
+# Apply paused-profile Dash hiding once the Shell extension from this login is up.
+"$BIN_DIR/docked-browser" refresh-dock >/dev/null 2>&1 &
+
 cd "$GUI_DIR"
 exec env PYTHONUNBUFFERED=1 python3 "$GUI_DIR/server.py"

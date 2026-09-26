@@ -10,10 +10,12 @@
 #
 # Repo layout: bin/ (this file) · gui/ (server + icons) · Dockerfile at root
 #
-# Commands: build | run | activate | pause | resume | stop | refresh-dock | status | focus
+# Commands: build | run | activate | pause | resume | stop | delete | refresh-dock | status | focus
 # Profile data: ~/.config/docker-chrome-profiles/<name>/
 # Container:    chrome-<name>
-# Dock class:   docked-browser-<name>  (per-profile StartupWMClass / --class)
+# Dock class:   docked-browser-<name>  (one icon per profile; same right-click menu)
+# Plank:        ~/.config/plank/dockN/launchers/docked-browser-<name>.dockitem
+#               only while chrome-<name> is running (paused and stopped stay off)
 # =============================================================================
 set -euo pipefail
 
@@ -27,18 +29,21 @@ DOCK_ICON_PY="$GUI_DIR/dock_icon.py"
 BRAND_ICONS_PY="$GUI_DIR/brand_icons.py"
 FOCUS_MODAL="$BIN_DIR/focus-modal"
 DOWNLOADS_DIR="${HOME}/Downloads"
+DOCUMENTS_DIR="${HOME}/Documents"
 DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 ICON_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/docked-browser/icons"
 STATE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/docked-browser"
 ACTIVE_FILE="$STATE_DIR/active-profile"
+# One Dash icon per profile. Right-click Actions stay the fleet menu
+# (Profiles…, Pause all, Resume all, Close all).
+APP_CLASS=""
+DESKTOP_FILE=""
 
 # --- Profile context (set by set_profile) ------------------------------------
 PROFILE_NAME=""
 DATA_DIR=""
 CONTAINER_NAME=""
-APP_CLASS=""
-DESKTOP_FILE=""
-ICON_FILE=""
+PROFILE_ICON_FILE=""
 
 usage() {
   cat <<EOF
@@ -47,18 +52,23 @@ Usage: $0 <command> [profile_name]
 Commands:
   build                 Build the Docker image (${IMAGE_NAME})
   run [name]            Start Chrome for a profile (default: default)
-  activate [name]       Resume / focus / or run (dock icon click)
+  activate [name]       Resume / focus / or run
   pause [name]          docker pause  (frozen in RAM, almost no CPU)
   resume [name]         docker unpause
-  stop [name]           Remove the container
-  refresh-dock [name]   Rebuild .desktop + icon (all profiles if name omitted)
-  focus                 Open the focus modal (optional picker)
+  stop [name]           Remove the container (keeps bookmarks / cookies)
+  delete [name]         Stop + erase that profile’s data and custom icon
+  pause-all             Pause every running chrome-* container
+  resume-all            Resume every paused chrome-* container
+  stop-all              Stop every chrome-* container
+  refresh-dock [name]   Rebuild each profile’s Dash icon (+ GUI badge if name given)
+  focus                 Open the focus modal (dock left-click)
   status                Print profile status as JSON
 
 Examples:
   $0 build
   $0 run work
   $0 pause work
+  $0 delete work
   $0 focus
 EOF
   exit 1
@@ -75,12 +85,17 @@ set_profile() {
   CONTAINER_NAME="chrome-${PROFILE_NAME}"
   APP_CLASS="docked-browser-${PROFILE_NAME}"
   DESKTOP_FILE="${DESKTOP_DIR}/${APP_CLASS}.desktop"
-  ICON_FILE="${ICON_DIR}/${APP_CLASS}.png"
+  PROFILE_ICON_FILE="${ICON_DIR}/${APP_CLASS}.png"
 }
 
 remember_active() {
   mkdir -p "$STATE_DIR"
   printf '%s\n' "$PROFILE_NAME" > "$ACTIVE_FILE"
+  # Tell predict-sleep this exact profile was opened / resumed
+  if [[ -f "$GUI_DIR/predict_sleep.py" ]]; then
+    PYTHONPATH="$GUI_DIR${PYTHONPATH:+:$PYTHONPATH}" \
+      python3 -c "from predict_sleep import mark_used; mark_used('$PROFILE_NAME')" 2>/dev/null || true
+  fi
 }
 
 profile_color() {
@@ -90,9 +105,33 @@ profile_color() {
 }
 
 # --- Desktop session env (GUI may start without a full login environment) ----
+# Cinnamon (and Xfce/MATE) on X11 often still have a dead wayland-0 socket
+# left by a previous GNOME login. That socket is not this session.
+session_wants_x11() {
+  case "${XDG_SESSION_TYPE:-}" in
+    x11) return 0 ;;
+    wayland) return 1 ;;
+  esac
+  case "${XDG_CURRENT_DESKTOP:-}:${DESKTOP_SESSION:-}" in
+    *[Cc]innamon*|*[Xx]fce*|*[Mm]ate*) return 0 ;;
+  esac
+  return 1
+}
+
 ensure_session_env() {
   export DISPLAY="${DISPLAY:-:0}"
   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  if session_wants_x11; then
+    unset WAYLAND_DISPLAY
+    if [[ -z "${XAUTHORITY:-}" || ! -f "${XAUTHORITY}" ]]; then
+      if [[ -f "${XDG_RUNTIME_DIR}/gdm/Xauthority" ]]; then
+        export XAUTHORITY="${XDG_RUNTIME_DIR}/gdm/Xauthority"
+      elif [[ -f "${HOME}/.Xauthority" ]]; then
+        export XAUTHORITY="${HOME}/.Xauthority"
+      fi
+    fi
+    return
+  fi
   if [[ -z "${WAYLAND_DISPLAY:-}" && -S "${XDG_RUNTIME_DIR}/wayland-0" ]]; then
     export WAYLAND_DISPLAY=wayland-0
   fi
@@ -118,102 +157,1018 @@ container_is_running() {
   [[ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null || echo false)" == "true" ]]
 }
 
-# --- Per-profile dock entry --------------------------------------------------
+# A profile started under GNOME Wayland still has --ozone-platform=wayland.
+# Unpausing that container on Cinnamon X11 cannot map a window.
+container_display_mismatch() {
+  local cmd envs
+  ensure_session_env
+  cmd="$(docker inspect -f '{{range .Config.Cmd}}{{.}} {{end}}' "$CONTAINER_NAME" 2>/dev/null || true)"
+  [[ -n "$cmd" ]] || return 1
+  envs="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER_NAME" 2>/dev/null || true)"
+  if session_wants_x11 || [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
+    [[ "$cmd" == *"--ozone-platform=wayland"* ]] && return 0
+    grep -q '^WAYLAND_DISPLAY=.\+' <<<"$envs" && return 0
+    return 1
+  fi
+  [[ "$cmd" == *"--ozone-platform=x11"* ]] && return 0
+  return 1
+}
+
+# Raise the Chrome window for this profile by WM class docked-browser-<name>.
+# Wayland MetaWindow.get_pid() does not match the container, so Activate(pids)
+# stays for callers that still need it and ActivateClass is what we call.
+# GNOME Shell loads this helper file at login; a new method is exported once
+# that copy is the one the shell is running.
+FOCUS_HELPER="${XDG_DATA_HOME:-$HOME/.local/share}/gnome-shell/extensions/focused-window-dbus@flexagoon.com/extension.js"
+FOCUS_HELPER_UUID="focused-window-dbus@flexagoon.com"
+
+window_focus_helper_ready() {
+  gdbus introspect --session \
+    --dest org.gnome.Shell \
+    --object-path /org/gnome/shell/extensions/FocusedWindow 2>/dev/null \
+    | grep -q 'name="ActivateClass"'
+}
+
+dash_helper_ready() {
+  gdbus introspect --session \
+    --dest org.gnome.Shell \
+    --object-path /org/gnome/shell/extensions/FocusedWindow 2>/dev/null \
+    | grep -q 'name="SetDashHidden"'
+}
+
+ensure_window_focus_helper() {
+  [[ -f "$FOCUS_HELPER" ]] || return 0
+  if ! grep -q 'docked-browser-focus' "$FOCUS_HELPER"; then
+  python3 - "$FOCUS_HELPER" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+old = """        <method name="Get">
+            <arg type="s" direction="out" name="window" />
+        </method>"""
+new = """        <method name="Get">
+            <arg type="s" direction="out" name="window" />
+        </method>
+        <method name="Activate">
+            <arg type="au" direction="in" name="pids" />
+            <arg type="b" direction="out" name="ok" />
+        </method>"""
+if old not in text:
+    raise SystemExit("Focused Window helper has an unexpected layout")
+text = text.replace(old, new, 1)
+if "import * as Main" not in text:
+    text = text.replace(
+        "import Shell from 'gi://Shell';\n",
+        "import Shell from 'gi://Shell';\nimport * as Main from 'resource:///org/gnome/shell/ui/main.js';\n",
+        1,
+    )
+text = text.replace(
+    """  disable() {""",
+    """  // docked-browser-focus: raise one existing window, do not open a tab.
+  Activate(pids) {
+    try {
+      const list = [];
+      for (const pid of pids)
+        list.push(Number(pid));
+      const wanted = new Set(list);
+      const matches = [];
+      for (const actor of global.get_window_actors()) {
+        const win = actor.meta_window;
+        if (!win || !wanted.has(win.get_pid()))
+          continue;
+        matches.push(win);
+      }
+      if (matches.length === 0)
+        return false;
+      const pages = matches.filter((win) => {
+        const title = (win.get_title() || "").toLowerCase();
+        return !title.includes("new tab") && title !== "about:blank" && title !== "google chrome";
+      });
+      const chosen = pages.length ? pages : matches;
+      Main.activateWindow(chosen[chosen.length - 1]);
+      return true;
+    } catch (_e) {
+      return false;
+    }
+  }
+
+  disable() {""",
+    1,
+)
+path.write_text(text, encoding="utf-8")
+PY
+  fi
+  # Already-patched helpers gain ActivateClass without touching Activate(pids).
+  # The running shell keeps its previous copy until the next login.
+  ensure_activate_class_helper
+  ensure_dash_hide_helper
+}
+
+ensure_activate_class_helper() {
+  [[ -f "$FOCUS_HELPER" ]] || return 0
+  if grep -q 'name="ActivateClass"' "$FOCUS_HELPER"; then
+    return 0
+  fi
+  python3 - "$FOCUS_HELPER" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+if 'name="ActivateClass"' in text:
+    raise SystemExit(0)
+old_schema = """        <method name="Activate">
+            <arg type="au" direction="in" name="pids" />
+            <arg type="b" direction="out" name="ok" />
+        </method>"""
+new_schema = old_schema + """
+        <method name="ActivateClass">
+            <arg type="s" direction="in" name="class_name" />
+            <arg type="b" direction="out" name="ok" />
+        </method>"""
+old_js = """      Main.activateWindow(chosen[chosen.length - 1]);
+      return true;
+    } catch (_e) {
+      return false;
+    }
+  }"""
+new_js = old_js + """
+
+  // docked-browser-activate-class: raise by WM class, not container pid.
+  ActivateClass(className) {
+    try {
+      const wanted = String(className || "").toLowerCase();
+      if (!wanted)
+        return false;
+      const matches = [];
+      for (const actor of global.get_window_actors()) {
+        const win = actor.meta_window;
+        if (!win)
+          continue;
+        const names = [];
+        const push = (value) => {
+          if (value)
+            names.push(String(value).toLowerCase());
+        };
+        try { push(win.get_wm_class()); } catch (_e) {}
+        try { push(win.get_wm_class_instance()); } catch (_e) {}
+        try {
+          if (typeof win.get_gtk_application_id === "function")
+            push(win.get_gtk_application_id());
+        } catch (_e) {}
+        try {
+          const app = Shell.WindowTracker.get_default().get_window_app(win);
+          if (app)
+            push(app.get_id());
+        } catch (_e) {}
+        let hit = false;
+        for (const name of names) {
+          const bare = name.endsWith(".desktop") ? name.slice(0, -8) : name;
+          if (name === wanted || bare === wanted) {
+            hit = true;
+            break;
+          }
+        }
+        if (hit)
+          matches.push(win);
+      }
+      if (matches.length === 0)
+        return false;
+      const pages = matches.filter((win) => {
+        const title = (win.get_title() || "").toLowerCase();
+        return !title.includes("new tab") && title !== "about:blank" && title !== "google chrome";
+      });
+      const chosen = pages.length ? pages : matches;
+      Main.activateWindow(chosen[chosen.length - 1]);
+      return true;
+    } catch (_e) {
+      return false;
+    }
+  }"""
+if old_schema not in text:
+    raise SystemExit("Focused Window helper has no Activate method")
+if text.count(old_js) != 1:
+    raise SystemExit("Focused Window helper Activate() anchor is not unique")
+text = text.replace(old_schema, new_schema, 1)
+text = text.replace(old_js, new_js, 1)
+path.write_text(text, encoding="utf-8")
+PY
+}
+
+ensure_dash_hide_helper() {
+  [[ -f "$FOCUS_HELPER" ]] || return 0
+  if grep -q 'docked-browser-dash' "$FOCUS_HELPER"; then
+    return 0
+  fi
+  python3 - "$FOCUS_HELPER" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+if "docked-browser-dash" in text:
+    raise SystemExit(0)
+old_import = "import * as Main from 'resource:///org/gnome/shell/ui/main.js';\n"
+new_import = old_import + "import * as AppFavorites from 'resource:///org/gnome/shell/ui/appFavorites.js';\n"
+if "appFavorites.js" not in text:
+    if old_import not in text:
+        raise SystemExit("Focused Window helper has no Main import")
+    text = text.replace(old_import, new_import, 1)
+old_schema = """        <method name="Activate">
+            <arg type="au" direction="in" name="pids" />
+            <arg type="b" direction="out" name="ok" />
+        </method>"""
+new_schema = old_schema + """
+        <method name="SetDashHidden">
+            <arg type="au" direction="in" name="pids" />
+            <arg type="b" direction="in" name="hidden" />
+            <arg type="b" direction="out" name="ok" />
+        </method>"""
+if "SetDashHidden" not in text:
+    if old_schema not in text:
+        raise SystemExit("Focused Window helper has no Activate method")
+    text = text.replace(old_schema, new_schema, 1)
+helper = """
+// docked-browser-dash: paused profiles leave the Dash until resumed.
+const dockedHiddenPids = new Set();
+let dockedOriginalGetRunning = null;
+let dockedOriginalFavoriteMap = null;
+
+function dockedAppHidden(app) {
+  try {
+    for (const win of app.get_windows()) {
+      if (dockedHiddenPids.has(win.get_pid()))
+        return true;
+    }
+  } catch (_e) {}
+  return false;
+}
+
+function dockedInstallDashFilter() {
+  if (!dockedOriginalGetRunning) {
+    dockedOriginalGetRunning = Shell.AppSystem.prototype.get_running;
+    Shell.AppSystem.prototype.get_running = function (...args) {
+      const running = dockedOriginalGetRunning.apply(this, args);
+      if (dockedHiddenPids.size === 0)
+        return running;
+      return running.filter((app) => !dockedAppHidden(app));
+    };
+  }
+  if (!dockedOriginalFavoriteMap) {
+    try {
+      const favs = AppFavorites.getAppFavorites();
+      dockedOriginalFavoriteMap = favs.getFavoriteMap.bind(favs);
+      favs.getFavoriteMap = function () {
+        const map = dockedOriginalFavoriteMap();
+        if (dockedHiddenPids.size === 0)
+          return map;
+        const filtered = {};
+        for (const [id, app] of Object.entries(map)) {
+          if (!dockedAppHidden(app))
+            filtered[id] = app;
+        }
+        return filtered;
+      };
+    } catch (_e) {}
+  }
+}
+
+function dockedRefreshDash() {
+  try {
+    const system = Shell.AppSystem.get_default();
+    const running = dockedOriginalGetRunning
+      ? dockedOriginalGetRunning.call(system)
+      : system.get_running();
+    if (running.length > 0)
+      system.emit("app-state-changed", running[0]);
+  } catch (_e) {}
+}
+
+function dockedClearDashFilter() {
+  dockedHiddenPids.clear();
+  if (dockedOriginalGetRunning) {
+    Shell.AppSystem.prototype.get_running = dockedOriginalGetRunning;
+    dockedOriginalGetRunning = null;
+  }
+  if (dockedOriginalFavoriteMap) {
+    try {
+      AppFavorites.getAppFavorites().getFavoriteMap = dockedOriginalFavoriteMap;
+    } catch (_e) {}
+    dockedOriginalFavoriteMap = null;
+  }
+}
+
+"""
+if "export default class" not in text:
+    raise SystemExit("Focused Window helper has no class")
+text = text.replace("export default class", helper + "export default class", 1)
+old_enable = """  enable() {
+    this.#windowTracker = Shell.WindowTracker.get_default();"""
+new_enable = """  enable() {
+    dockedInstallDashFilter();
+    this.#windowTracker = Shell.WindowTracker.get_default();"""
+if old_enable not in text:
+    raise SystemExit("Focused Window helper enable() has an unexpected layout")
+text = text.replace(old_enable, new_enable, 1)
+old_disable = """  disable() {"""
+new_disable = """  SetDashHidden(pids, hidden) {
+    try {
+      dockedInstallDashFilter();
+      for (const pid of pids) {
+        const n = Number(pid);
+        if (hidden)
+          dockedHiddenPids.add(n);
+        else
+          dockedHiddenPids.delete(n);
+      }
+      dockedRefreshDash();
+      return true;
+    } catch (_e) {
+      return false;
+    }
+  }
+
+  disable() {
+    dockedClearDashFilter();
+    dockedRefreshDash();
+"""
+if text.count(old_disable) != 1:
+    raise SystemExit("Focused Window helper disable() anchor is not unique")
+text = text.replace(old_disable, new_disable, 1)
+path.write_text(text, encoding="utf-8")
+PY
+}
+
+container_pid_csv() {
+  local line main
+  local -a pids=()
+  while IFS= read -r line; do
+    [[ "$line" =~ ^[0-9]+$ ]] || continue
+    pids+=("$line")
+  done < <(docker top "$CONTAINER_NAME" -eo pid 2>/dev/null | tail -n +2)
+  if ((${#pids[@]} == 0)); then
+    main="$(docker inspect -f '{{.State.Pid}}' "$CONTAINER_NAME" 2>/dev/null || echo 0)"
+    [[ "$main" =~ ^[1-9][0-9]*$ ]] && pids+=("$main")
+  fi
+  ((${#pids[@]})) || return 0
+  (IFS=,; printf '%s' "${pids[*]}")
+}
+
+set_dash_hidden() {
+  local hidden="$1" csv
+  csv="$(container_pid_csv)" || true
+  [[ -n "$csv" ]] || return 0
+  gdbus call --session \
+    --dest org.gnome.Shell \
+    --object-path /org/gnome/shell/extensions/FocusedWindow \
+    --method org.gnome.shell.extensions.FocusedWindow.SetDashHidden \
+    "[${csv}]" "${hidden}" >/dev/null 2>&1 || true
+}
+
+sync_paused_dash() {
+  local saved_name="${PROFILE_NAME:-}" name status
+  [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" || -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus" ]] || return 0
+  ensure_window_focus_helper
+  # GNOME imports an extension once per login, so SetDashHidden appears
+  # only after the next login. Until then, leave the Dash alone.
+  if ! dash_helper_ready; then
+    return 0
+  fi
+  while IFS= read -r name; do
+    [[ "$name" =~ ^[a-zA-Z0-9_-]{1,64}$ ]] || continue
+    set_profile "$name"
+    status="$(container_status)"
+    case "$status" in
+      paused)  set_dash_hidden true ;;
+      running) set_dash_hidden false ;;
+    esac
+  done < <(each_chrome_profile)
+  if [[ -n "$saved_name" ]]; then
+    set_profile "$saved_name"
+  else
+    PROFILE_NAME=""
+    DATA_DIR=""
+    CONTAINER_NAME=""
+    APP_CLASS=""
+    DESKTOP_FILE=""
+    PROFILE_ICON_FILE=""
+  fi
+}
+
+# Focus docked-browser-<profile> without opening another tab.
+# Returns 0 when a matching window was raised (or, on GNOME Wayland, the
+# request was handed to the shell helper). Returns 1 when no X11 window
+# with that class is mapped yet.
+_focus_profile_class() {
+  local class_name="$1"
+  ensure_session_env
+  # GNOME Wayland: MetaWindow pid does not match the container, so raise by class.
+  if ! session_wants_x11 && [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+    ensure_window_focus_helper
+    window_focus_helper_ready || return 0
+    gdbus call --session \
+      --dest org.gnome.Shell \
+      --object-path /org/gnome/shell/extensions/FocusedWindow \
+      --method org.gnome.shell.extensions.FocusedWindow.ActivateClass \
+      "'${class_name}'" >/dev/null 2>&1 || true
+    return 0
+  fi
+  python3 - "$class_name" <<'PY'
+import ctypes
+import os
+import shutil
+import subprocess
+import sys
+
+wanted = (sys.argv[1] or "").strip()
+if not wanted:
+    raise SystemExit(1)
+
+def is_placeholder(title: str) -> bool:
+    text = (title or "").strip().lower()
+    if not text:
+        return True
+    if "new tab" in text:
+        return True
+    return text in {"about:blank", "google chrome"}
+
+def class_names(raw: str) -> list[str]:
+    names = []
+    for part in raw.replace("\x00", " ").replace(".", " ").split():
+        item = part.strip().lower()
+        if item.endswith(".desktop"):
+            item = item[: -len(".desktop")]
+        if item:
+            names.append(item)
+    return names
+
+def matches(raw: str) -> bool:
+    return wanted.lower() in class_names(raw)
+
+def choose(rows: list[tuple[str, str]]) -> tuple[str, str] | None:
+    if not rows:
+        return None
+    pages = [row for row in rows if not is_placeholder(row[1])]
+    return (pages or rows)[-1]
+
+def via_wmctrl() -> tuple[str, str] | None:
+    if shutil.which("wmctrl") is None:
+        return None
+    proc = subprocess.run(["wmctrl", "-lx"], capture_output=True, text=True)
+    if proc.returncode != 0:
+        return None
+    rows = []
+    for line in proc.stdout.splitlines():
+        parts = line.split(None, 4)
+        if len(parts) < 3:
+            continue
+        wid, _desktop, wmclass = parts[0], parts[1], parts[2]
+        title = parts[4] if len(parts) > 4 else ""
+        if matches(wmclass):
+            rows.append((wid, title))
+    chosen = choose(rows)
+    if chosen is None:
+        return None
+    act = subprocess.run(["wmctrl", "-i", "-a", chosen[0]], capture_output=True, text=True)
+    if act.returncode != 0:
+        return None
+    return chosen
+
+def via_xdotool() -> tuple[str, str] | None:
+    if shutil.which("xdotool") is None:
+        return None
+    found = []
+    for flag in ("--class", "--classname"):
+        proc = subprocess.run(
+            ["xdotool", "search", flag, wanted],
+            capture_output=True, text=True,
+        )
+        if proc.returncode == 0:
+            found.extend(proc.stdout.split())
+    rows = []
+    seen = set()
+    for wid in found:
+        if wid in seen:
+            continue
+        seen.add(wid)
+        cls = subprocess.run(
+            ["xprop", "-id", wid, "WM_CLASS"],
+            capture_output=True, text=True,
+        )
+        if cls.returncode != 0 or not matches(cls.stdout):
+            continue
+        name = subprocess.run(
+            ["xdotool", "getwindowname", wid],
+            capture_output=True, text=True,
+        )
+        rows.append((wid, name.stdout.strip() if name.returncode == 0 else ""))
+    chosen = choose(rows)
+    if chosen is None:
+        return None
+    act = subprocess.run(["xdotool", "windowactivate", chosen[0]], capture_output=True, text=True)
+    if act.returncode != 0:
+        return None
+    return chosen
+
+def via_xlib() -> tuple[str, str] | None:
+    x11 = ctypes.CDLL("libX11.so.6")
+    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    x11.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+    x11.XDefaultRootWindow.restype = ctypes.c_ulong
+    x11.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
+    x11.XInternAtom.restype = ctypes.c_ulong
+    x11.XFree.argtypes = [ctypes.c_void_p]
+    x11.XFlush.argtypes = [ctypes.c_void_p]
+    x11.XMapRaised.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+    x11.XRaiseWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+    x11.XSendEvent.argtypes = [
+        ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_long, ctypes.c_void_p,
+    ]
+    x11.XSendEvent.restype = ctypes.c_int
+    x11.XGetWindowProperty.argtypes = [
+        ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong,
+        ctypes.c_long, ctypes.c_long, ctypes.c_int, ctypes.c_ulong,
+        ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_ulong),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    x11.XGetWindowProperty.restype = ctypes.c_int
+
+    display = os.environ.get("DISPLAY", ":0").encode()
+    dpy = x11.XOpenDisplay(display)
+    if not dpy:
+        return None
+
+    def atom(name: bytes) -> int:
+        return x11.XInternAtom(dpy, name, False)
+
+    def prop(win: int, name: bytes, req: int) -> bytes:
+        actual_type = ctypes.c_ulong()
+        actual_format = ctypes.c_int()
+        nitems = ctypes.c_ulong()
+        leftover = ctypes.c_ulong()
+        data = ctypes.c_void_p()
+        status = x11.XGetWindowProperty(
+            dpy, win, atom(name), 0, 1024, False, req,
+            ctypes.byref(actual_type), ctypes.byref(actual_format),
+            ctypes.byref(nitems), ctypes.byref(leftover), ctypes.byref(data),
+        )
+        if status != 0 or not data.value or nitems.value <= 0:
+            return b""
+        # format 8: nitems is a byte count. format 32: nitems is a long count.
+        if actual_format.value == 32:
+            blob = ctypes.string_at(data.value, nitems.value * ctypes.sizeof(ctypes.c_ulong))
+        else:
+            blob = ctypes.string_at(data.value, nitems.value)
+        x11.XFree(data)
+        return blob
+
+    root = x11.XDefaultRootWindow(dpy)
+    raw_ids = prop(root, b"_NET_CLIENT_LIST", 0)
+    if not raw_ids:
+        return None
+    count = len(raw_ids) // ctypes.sizeof(ctypes.c_ulong)
+    arr = (ctypes.c_ulong * count).from_buffer_copy(raw_ids)
+    rows = []
+    for wid in arr:
+        raw_class = prop(int(wid), b"WM_CLASS", 0)
+        if not raw_class or not matches(raw_class.decode("latin1", "replace")):
+            continue
+        raw_title = prop(int(wid), b"_NET_WM_NAME", atom(b"UTF8_STRING"))
+        title = raw_title.split(b"\x00", 1)[0].decode("utf-8", "replace") if raw_title else ""
+        rows.append((str(int(wid)), title))
+    chosen = choose(rows)
+    if chosen is None:
+        return None
+    target = int(chosen[0])
+
+    class Data(ctypes.Union):
+        _fields_ = [
+            ("b", ctypes.c_char * 20),
+            ("s", ctypes.c_short * 10),
+            ("l", ctypes.c_long * 5),
+        ]
+
+    class XClientMessageEvent(ctypes.Structure):
+        _fields_ = [
+            ("type", ctypes.c_int),
+            ("serial", ctypes.c_ulong),
+            ("send_event", ctypes.c_int),
+            ("display", ctypes.c_void_p),
+            ("window", ctypes.c_ulong),
+            ("message_type", ctypes.c_ulong),
+            ("format", ctypes.c_int),
+            ("data", Data),
+        ]
+
+    event = XClientMessageEvent()
+    event.type = 33  # ClientMessage
+    event.send_event = 1
+    event.display = dpy
+    event.window = target
+    event.message_type = atom(b"_NET_ACTIVE_WINDOW")
+    event.format = 32
+    event.data.l[0] = 1  # application
+    event.data.l[1] = 0  # CurrentTime
+    buf = ctypes.create_string_buffer(192)
+    ctypes.memmove(buf, ctypes.addressof(event), ctypes.sizeof(event))
+    mask = (1 << 20) | (1 << 19)  # SubstructureRedirect | SubstructureNotify
+    x11.XMapRaised(dpy, target)
+    x11.XRaiseWindow(dpy, target)
+    x11.XSendEvent(dpy, root, False, mask, buf)
+    x11.XFlush(dpy)
+    return chosen
+
+chosen = via_wmctrl() or via_xdotool() or via_xlib()
+if not chosen:
+    raise SystemExit(1)
+print(f"focused {wanted} {chosen[0]} {chosen[1]}")
+PY
+}
+
+raise_profile_window() {
+  local class_name
+  class_name="${APP_CLASS:-docked-browser-${PROFILE_NAME}}"
+  echo "Raising window: $PROFILE_NAME"
+  # Same class as Chrome --class / --name and the profile StartupWMClass.
+  # Do not hand Chrome a page URL: that opens another tab of a site already open.
+  # A window that is not mapped yet must not fail activate/resume.
+  _focus_profile_class "$class_name" || true
+}
+
+# --- Per-profile dock entries (one icon each, shared right-click menu) ---
 # HARD RULES:
-#   • One .desktop + icon per profile (pin each in the Dash if you want)
-#   • Left-click → activate; right-click Actions rewrite with state (only valid)
+#   • One .desktop + badge per profile; Chrome --class matches StartupWMClass
+#   • Left-click → activate that profile; right-click is the fleet menu
+#     (Profiles…, Pause all, Resume all, Close all — only when valid)
 #   • Never invent a partial hicolor/index.theme
 #   • Icons live under ~/.local/share/docked-browser/icons/ (not hicolor)
-install_dock_entry() {
-  mkdir -p "$DESKTOP_DIR" "$ICON_DIR" "$STATE_DIR" "$DATA_DIR"
-  local color title custom_icon status actions_csv actions_block
+#   • Do not swap Icon= when a profile pauses (GNOME caches window icons)
+#   • Plank shows a pin only while that profile’s container is running
+#     (docker state running, not paused or stopped). The window stays.
+#     Do not dim or swap Icon=. Only that profile’s .dockitem is added
+#     or removed; other launchers stay.
+
+fleet_flags() {
+  # Sets HAS_RUNNING / HAS_PAUSED (0|1) from chrome-* containers.
+  HAS_RUNNING=0
+  HAS_PAUSED=0
+  local name status
+  while IFS= read -r name; do
+    [[ "$name" == chrome-* ]] || continue
+    status="$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null || true)"
+    case "$status" in
+      running) HAS_RUNNING=1 ;;
+      paused)  HAS_PAUSED=1 ;;
+    esac
+  done < <(docker ps -a --filter 'name=chrome-' --format '{{.Names}}' 2>/dev/null || true)
+}
+
+ensure_profile_gui_icon() {
+  # Badge for this profile’s Dash icon, and for the web UI / focus modal.
+  [[ -n "${PROFILE_NAME:-}" && -n "${PROFILE_ICON_FILE:-}" ]] || return 0
+  mkdir -p "$ICON_DIR" "$DATA_DIR"
+  local color custom_icon
   color="$(profile_color)"
-  title="Docked · ${PROFILE_NAME}"
   custom_icon="${DATA_DIR}/dock-icon.png"
+  python3 "$DOCK_ICON_PY" "$PROFILE_NAME" "$color" "$custom_icon" "$PROFILE_ICON_FILE"
+}
 
-  python3 "$DOCK_ICON_PY" "$PROFILE_NAME" "$color" "$custom_icon" "$ICON_FILE"
-
-  # Drop legacy hicolor / chrome-cockpit leftovers for this profile
+cleanup_legacy_dock_files() {
+  local f
+  # Shared launcher (windows no longer use class docked-browser) + chrome-cockpit.
+  rm -f "${DESKTOP_DIR}/docked-browser.desktop"
+  for f in "${DESKTOP_DIR}"/chrome-cockpit-*.desktop; do
+    [[ -e "$f" ]] || continue
+    rm -f "$f"
+  done
   rm -f \
-    "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/128x128/apps/${APP_CLASS}"* \
-    "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/128x128/apps/chrome-cockpit-${PROFILE_NAME}"* \
-    "${DESKTOP_DIR}/chrome-cockpit-${PROFILE_NAME}.desktop" \
-    "${XDG_DATA_HOME:-$HOME/.local/share}/chrome-cockpit/icons/chrome-cockpit-${PROFILE_NAME}"* \
+    "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/128x128/apps/docked-browser-"* \
+    "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/128x128/apps/chrome-cockpit-"* \
+    "${XDG_DATA_HOME:-$HOME/.local/share}/chrome-cockpit/icons/chrome-cockpit-"* \
     2>/dev/null || true
+}
 
-  # Also remove the old shared "Docked Browser" launcher if present
-  rm -f "${DESKTOP_DIR}/docked-browser.desktop" 2>/dev/null || true
+prune_stale_profile_desktops() {
+  local f base name names_blob
+  names_blob=$'\n'"$(each_chrome_profile)"$'\n'
+  for f in "${DESKTOP_DIR}"/docked-browser-*.desktop; do
+    [[ -e "$f" ]] || continue
+    base="$(basename "$f" .desktop)"
+    name="${base#docked-browser-}"
+    if [[ "$names_blob" != *$'\n'"$name"$'\n'* ]]; then
+      rm -f "$f"
+    fi
+  done
+}
 
-  # Dynamic right-click menu: only actions that make sense right now
-  status="$(container_status)"
-  actions_csv=""
-  actions_block=""
-  case "$status" in
-    running)
-      actions_csv="pause;close;"
-      actions_block=$(cat <<EOF
-
-[Desktop Action pause]
-Name=Pause
-Exec=$SCRIPT_PATH pause $PROFILE_NAME
-
-[Desktop Action close]
-Name=Close
-Exec=$SCRIPT_PATH stop $PROFILE_NAME
-EOF
-)
-      ;;
-    paused)
-      actions_csv="resume;close;"
-      actions_block=$(cat <<EOF
-
-[Desktop Action resume]
-Name=Resume
-Exec=$SCRIPT_PATH resume $PROFILE_NAME
-
-[Desktop Action close]
-Name=Close
-Exec=$SCRIPT_PATH stop $PROFILE_NAME
-EOF
-)
-      ;;
-    *)
-      actions_csv="open;"
-      actions_block=$(cat <<EOF
-
-[Desktop Action open]
-Name=Open
-Exec=$SCRIPT_PATH run $PROFILE_NAME
-EOF
-)
-      ;;
-  esac
-
-  cat > "$DESKTOP_FILE" <<EOF
+write_profile_desktop() {
+  local title="Docked · ${PROFILE_NAME}"
+  {
+    cat <<EOF
 [Desktop Entry]
 Version=1.0
 Type=Application
 Name=$title
 GenericName=Web Browser
-Comment=Open the “${PROFILE_NAME}” Chrome profile
+Comment=Chrome profile ${PROFILE_NAME}
 Exec=$SCRIPT_PATH activate $PROFILE_NAME
-Icon=$ICON_FILE
+Icon=$PROFILE_ICON_FILE
 Terminal=false
 Categories=Network;WebBrowser;
 StartupNotify=true
 StartupWMClass=$APP_CLASS
 NoDisplay=true
 Actions=$actions_csv
-${actions_block}
 EOF
-
+    printf '%s' "${action_sections[@]}"
+  } > "$DESKTOP_FILE"
   touch "$DESKTOP_FILE"
+}
+
+# Pin a profile on the live Plank dock only while its container state is
+# running. Paused, stopped, and missing containers lose their .dockitem.
+# Other launchers (files, Chrome, terminal, …) stay put.
+# A second refresh must not add a second .dockitem for the same launcher.
+sync_plank_launchers() {
+  command -v plank >/dev/null 2>&1 || return 0
+  local base="${XDG_CONFIG_HOME:-$HOME/.config}/plank"
+  [[ -d "$base" ]] || return 0
+  python3 - "$DESKTOP_DIR" "$base" <<'PY'
+import ast
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+desktop_dir = Path(sys.argv[1])
+plank_base = Path(sys.argv[2])
+name_re = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+prefix = "docked-browser-"
+
+
+def enabled_dock_names() -> list[str]:
+    try:
+        raw = subprocess.check_output(
+            ["gsettings", "get", "net.launchpad.plank", "enabled-docks"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    raw = raw.removeprefix("@as ").strip()
+    if not raw or raw == "[]":
+        return []
+    try:
+        names = ast.literal_eval(raw)
+    except (SyntaxError, ValueError):
+        return []
+    if not isinstance(names, (list, tuple)):
+        return []
+    return [str(name) for name in names if re.fullmatch(r"dock[0-9]+", str(name))]
+
+
+def live_dock_dirs() -> list[Path]:
+    found: list[Path] = []
+    for name in enabled_dock_names():
+        path = plank_base / name
+        if path.is_dir():
+            found.append(path)
+    if found:
+        return found
+    primary = plank_base / "dock1"
+    if primary.is_dir():
+        return [primary]
+    extras = sorted(path for path in plank_base.glob("dock*") if path.is_dir())
+    return extras[:1]
+
+
+def profile_name(desktop: Path) -> str | None:
+    if desktop.suffix != ".desktop" or not desktop.name.startswith(prefix):
+        return None
+    name = desktop.name[len(prefix) : -len(".desktop")]
+    if not name_re.fullmatch(name):
+        return None
+    return name
+
+
+def desktop_for_uri(uri: str) -> Path | None:
+    if not uri.startswith("file://"):
+        return None
+    path = Path(uri.removeprefix("file://"))
+    # file:// URIs are absolute paths without extra encoding for these names.
+    try:
+        path = path.resolve()
+        root = desktop_dir.resolve()
+    except OSError:
+        return None
+    if path.parent != root:
+        return None
+    if profile_name(path) is None:
+        return None
+    return path
+
+
+def running_profile_names() -> set[str]:
+    """Profiles whose chrome-* container State.Status is running (not paused)."""
+    try:
+        ids = subprocess.check_output(
+            ["docker", "ps", "-aq", "--filter", "name=chrome-"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).split()
+    except (OSError, subprocess.CalledProcessError):
+        return set()
+    if not ids:
+        return set()
+    try:
+        raw = subprocess.check_output(
+            ["docker", "inspect", "-f", "{{.Name}}\t{{.State.Status}}", *ids],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return set()
+    running: set[str] = set()
+    for line in raw.splitlines():
+        cname, sep, status = line.strip().partition("\t")
+        if not sep:
+            continue
+        cname = cname.lstrip("/")
+        if not cname.startswith("chrome-") or status != "running":
+            continue
+        name = cname[len("chrome-") :]
+        if name_re.fullmatch(name):
+            running.add(name)
+    return running
+
+
+def launcher_uri(dockitem: Path) -> str:
+    try:
+        text = dockitem.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Launcher="):
+            return stripped.split("=", 1)[1].strip()
+    return ""
+
+
+def write_dockitem(path: Path, uri: str) -> None:
+    body = f"[PlankDockItemPreferences]\nLauncher={uri}\n"
+    # One write so Plank's directory watch sees a complete file (CREATED).
+    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    try:
+        os.write(fd, body.encode())
+    finally:
+        os.close(fd)
+
+
+def sync_dock(dock_dir: Path, running: set[str]) -> None:
+    launchers = dock_dir / "launchers"
+    launchers.mkdir(parents=True, exist_ok=True)
+    desired: dict[str, str] = {}
+    hidden: list[str] = []
+    if desktop_dir.is_dir():
+        for desktop in sorted(desktop_dir.glob("docked-browser-*.desktop")):
+            name = profile_name(desktop)
+            if name is None:
+                continue
+            if name not in running:
+                hidden.append(name)
+                continue
+            desired[name] = desktop.resolve().as_uri()
+
+    claimed: dict[str, Path] = {}
+    for dockitem in sorted(launchers.glob("*.dockitem")):
+        uri = launcher_uri(dockitem)
+        target = desktop_for_uri(uri)
+        if target is None:
+            # Not one of our profile launchers.
+            continue
+        name = profile_name(target)
+        if name is None:
+            continue
+        if name not in desired or desired[name] != uri or not target.is_file():
+            if dockitem.name.startswith(prefix):
+                dockitem.unlink(missing_ok=True)
+            continue
+        preferred = launchers / f"{prefix}{name}.dockitem"
+        previous = claimed.get(name)
+        if previous is None:
+            claimed[name] = dockitem
+            continue
+        # Keep the canonical filename when both point at this profile.
+        if dockitem == preferred and previous != preferred:
+            if previous.name.startswith(prefix):
+                previous.unlink(missing_ok=True)
+            claimed[name] = dockitem
+        elif dockitem.name.startswith(prefix):
+            dockitem.unlink(missing_ok=True)
+
+    for name, uri in desired.items():
+        if name in claimed:
+            continue
+        path = launchers / f"{prefix}{name}.dockitem"
+        if path.exists():
+            # Filename is ours but its launcher is something else. Leave it.
+            continue
+        write_dockitem(path, uri)
+        claimed[name] = path
+
+    shown = " ".join(sorted(desired)) if desired else "none"
+    print(f"Plank {dock_dir.name}: {shown}")
+    if hidden:
+        print(f"Plank {dock_dir.name} hidden: {' '.join(hidden)}")
+
+
+running = running_profile_names()
+for dock_dir in live_dock_dirs():
+    sync_dock(dock_dir, running)
+PY
+}
+
+install_dock_entry() {
+  local saved_name="${PROFILE_NAME:-}"
+  local name actions_csv=""
+  local -a action_sections=()
+  local -a written=()
+
+  mkdir -p "$DESKTOP_DIR" "$ICON_DIR" "$STATE_DIR"
+  if [[ -n "$saved_name" ]]; then
+    mkdir -p "$DATA_DIR"
+  fi
+
+  if [[ -f "$BRAND_ICONS_PY" ]]; then
+    python3 "$BRAND_ICONS_PY" --icons-dir "$ICON_DIR" --no-static >/dev/null || true
+  fi
+
+  cleanup_legacy_dock_files
+  prune_stale_profile_desktops
+  fleet_flags
+
+  actions_csv="profiles;"
+  action_sections+=("
+[Desktop Action profiles]
+Name=Profiles…
+Exec=$SCRIPT_PATH focus
+")
+
+  if ((HAS_RUNNING)); then
+    actions_csv+="pause-all;"
+    action_sections+=("
+[Desktop Action pause-all]
+Name=Pause all
+Exec=$SCRIPT_PATH pause-all
+")
+  fi
+  if ((HAS_PAUSED)); then
+    actions_csv+="resume-all;"
+    action_sections+=("
+[Desktop Action resume-all]
+Name=Resume all
+Exec=$SCRIPT_PATH resume-all
+")
+  fi
+  if ((HAS_RUNNING || HAS_PAUSED)); then
+    actions_csv+="close-all;"
+    action_sections+=("
+[Desktop Action close-all]
+Name=Close all
+Exec=$SCRIPT_PATH stop-all
+")
+  fi
+
+  while IFS= read -r name; do
+    [[ "$name" =~ ^[a-zA-Z0-9_-]{1,64}$ ]] || continue
+    set_profile "$name"
+    ensure_profile_gui_icon
+    write_profile_desktop
+    written+=("$PROFILE_NAME")
+  done < <(each_chrome_profile)
+
+  if [[ -n "$saved_name" ]]; then
+    set_profile "$saved_name"
+  else
+    PROFILE_NAME=""
+    DATA_DIR=""
+    CONTAINER_NAME=""
+    APP_CLASS=""
+    DESKTOP_FILE=""
+    PROFILE_ICON_FILE=""
+  fi
+
   if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true
   fi
 
-  echo "Dock entry: $title (menu: ${actions_csv%;})"
-  echo "Icon file: $ICON_FILE"
+  sync_paused_dash
+  sync_plank_launchers
+
+  if ((${#written[@]})); then
+    echo "Dock entries: ${written[*]} (menu: ${actions_csv%;})"
+  else
+    echo "Dock entries: none (no profiles yet)"
+  fi
 }
 
 # --- Chrome profile prefs (fonts) --------------------------------------------
@@ -275,7 +1230,7 @@ cmd_build() {
 cmd_run() {
   ensure_session_env
   allow_x11_for_docker
-  mkdir -p "$DATA_DIR" "$DOWNLOADS_DIR" "${HOME}/.config/pulse"
+  mkdir -p "$DATA_DIR" "$DOWNLOADS_DIR" "$DOCUMENTS_DIR" "${HOME}/.config/pulse"
 
   if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
     echo "No DISPLAY/WAYLAND_DISPLAY. Start from a desktop session so Chrome can open a window."
@@ -308,11 +1263,24 @@ cmd_run() {
     # File pickers (WhatsApp, Gmail, …) return /home/you/... — without this,
     # Chrome uploads 0-byte / "empty" files from Documents etc.
     -v "$HOME:$HOME:ro"
-    # Downloads writable for save + upload (overlays the RO home mount)
+    # Downloads and Documents writable for save + upload (overlay the RO home mount)
     -v "$DOWNLOADS_DIR:$DOWNLOADS_DIR"
     -v "$DOWNLOADS_DIR:/home/chromeuser/Downloads"
+    -v "$DOCUMENTS_DIR:$DOCUMENTS_DIR"
     --user "$(id -u):$(id -g)"
   )
+
+  # Match host timezone (Docker defaults to UTC otherwise).
+  local host_tz
+  host_tz="$(cat /etc/timezone 2>/dev/null || true)"
+  [[ -n "$host_tz" ]] || host_tz="${TZ:-Asia/Kuala_Lumpur}"
+  run_args+=(-e "TZ=$host_tz")
+  if [[ -e /etc/localtime ]]; then
+    run_args+=(-v /etc/localtime:/etc/localtime:ro)
+  fi
+  if [[ -f /etc/timezone ]]; then
+    run_args+=(-v /etc/timezone:/etc/timezone:ro)
+  fi
 
   chrome_flags=(
     --no-first-run
@@ -323,15 +1291,22 @@ cmd_run() {
     --new-window
     --class="$APP_CLASS"
     --name="$APP_CLASS"
+    # Default data dir keeps WM_CLASS instance "google-chrome", so Plank/Bamf
+    # pin the window on the host Chrome icon. Naming this dir (same mount)
+    # leaves the class docked-browser-<profile> to match its own launcher.
+    --user-data-dir=/home/chromeuser/.config/google-chrome
     --font-render-hinting=none
     --ignore-gpu-blocklist
     --enable-gpu-rasterization
     --enable-zero-copy
-    "about:blank"
+    # A long docker pause freezes Chrome while the clock moves. These two
+    # watchers then abort the browser on unpause (exit 133).
+    --disable-gpu-watchdog
+    --disable-features=EnableHangWatcher
   )
   feature_flags="AcceleratedVideoDecodeLinuxGL,AcceleratedVideoEncoder,CanvasOopRasterization"
 
-  if [[ -n "${WAYLAND_DISPLAY:-}" && -S "${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY}" ]]; then
+  if ! session_wants_x11 && [[ -n "${WAYLAND_DISPLAY:-}" && -S "${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY}" ]]; then
     echo "Using Wayland: $WAYLAND_DISPLAY"
     run_args+=(-e "WAYLAND_DISPLAY=$WAYLAND_DISPLAY")
     run_args+=(-v "${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY}:${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY}")
@@ -339,9 +1314,12 @@ cmd_run() {
     feature_flags="UseOzonePlatform,${feature_flags}"
   else
     echo "Using X11: $DISPLAY"
+    unset WAYLAND_DISPLAY
     chrome_flags+=(--ozone-platform=x11)
+    feature_flags="UseOzonePlatform,${feature_flags}"
   fi
   chrome_flags+=(--enable-features="$feature_flags")
+  chrome_flags+=("about:blank")
 
   if [[ -S "${XDG_RUNTIME_DIR}/bus" ]]; then
     run_args+=(-e "DBUS_SESSION_BUS_ADDRESS=unix:path=${XDG_RUNTIME_DIR}/bus")
@@ -373,6 +1351,10 @@ cmd_run() {
     run_args+=(-v "$XAUTHORITY:/home/chromeuser/.Xauthority:ro")
   fi
 
+  if [[ -n "${DOCKED_ACTIVATION_TOKEN:-}" ]]; then
+    run_args+=(-e "XDG_ACTIVATION_TOKEN=$DOCKED_ACTIVATION_TOKEN")
+  fi
+
   echo "Launching profile: $PROFILE_NAME (dock class: $APP_CLASS)"
   local image="$IMAGE_NAME"
   if ! docker image inspect "$image" >/dev/null 2>&1; then
@@ -393,20 +1375,72 @@ cmd_run() {
   echo "Running: $CONTAINER_NAME"
   remember_active
   install_dock_entry
+  # Chrome maps the window a moment after the container stays up.
+  local attempt
+  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    if _focus_profile_class "$APP_CLASS"; then
+      echo "Raising window: $PROFILE_NAME"
+      break
+    fi
+    sleep 0.4
+  done
+}
+
+# docker pause freezes every Chrome thread while the clock keeps moving.
+# On a long freeze, EnableHangWatcher treats that as a stuck browser and
+# aborts with SIGTRAP (docker exit 133) a couple of seconds after unpause.
+# New launches disable the watcher. A container started before that still
+# needs the saved profile reopened when the wake-up crash happens.
+unpause_profile() {
+  if container_display_mismatch; then
+    echo "“$PROFILE_NAME” was started on another display server. Reopening it on this session."
+    cmd_run
+    return
+  fi
+  if ! docker unpause "$CONTAINER_NAME"; then
+    echo "Could not resume $PROFILE_NAME"
+    return 1
+  fi
+  local i status code
+  for i in 1 2 3 4 5 6; do
+    sleep 0.5
+    if container_is_running; then
+      continue
+    fi
+    status="$(container_status)"
+    if [[ "$status" == "paused" ]]; then
+      echo "Could not resume $PROFILE_NAME"
+      return 1
+    fi
+    break
+  done
+  if container_is_running; then
+    return 0
+  fi
+  code="$(docker inspect -f '{{.State.ExitCode}}' "$CONTAINER_NAME" 2>/dev/null || echo '?')"
+  echo "“$PROFILE_NAME” closed after resume (exit ${code}). Reopening the saved window."
+  cmd_run
 }
 
 cmd_activate() {
   # Safer than always destroy/recreate
   ensure_session_env
   if container_is_paused; then
-    docker unpause "$CONTAINER_NAME"
+    unpause_profile
     remember_active
     echo "Resumed: $PROFILE_NAME"
     install_dock_entry
+    sleep 0.3
+    raise_profile_window
   elif container_is_running; then
+    if container_display_mismatch; then
+      echo "“$PROFILE_NAME” was started on another display server. Reopening it on this session."
+      exec "$SCRIPT_PATH" run "$PROFILE_NAME"
+    fi
     remember_active
     echo "Already running: $PROFILE_NAME"
     install_dock_entry
+    raise_profile_window
   else
     exec "$SCRIPT_PATH" run "$PROFILE_NAME"
   fi
@@ -420,9 +1454,11 @@ cmd_pause() {
 
 cmd_resume() {
   echo "Resuming profile: $PROFILE_NAME..."
-  docker unpause "$CONTAINER_NAME"
+  unpause_profile
   remember_active
   install_dock_entry
+  sleep 0.3
+  raise_profile_window
 }
 
 cmd_stop() {
@@ -431,47 +1467,107 @@ cmd_stop() {
   install_dock_entry
 }
 
-cmd_refresh_dock() {
-  install_dock_entry
-  # Keep control-surface brand icons in sync (web / tray / modal)
-  if [[ -f "$BRAND_ICONS_PY" ]]; then
-    python3 "$BRAND_ICONS_PY" --icons-dir "$ICON_DIR" --no-static >/dev/null || true
+cmd_delete() {
+  echo "Deleting profile: $PROFILE_NAME..."
+  if docker inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
+    docker rm -f "$CONTAINER_NAME" >/dev/null
+    echo "  removed container $CONTAINER_NAME"
   fi
+  if [[ -d "$DATA_DIR" ]]; then
+    rm -rf -- "$DATA_DIR"
+    echo "  removed data $DATA_DIR"
+  else
+    echo "  no data directory (already gone)"
+  fi
+  if [[ -f "$PROFILE_ICON_FILE" ]]; then
+    rm -f -- "$PROFILE_ICON_FILE"
+    echo "  removed icon $PROFILE_ICON_FILE"
+  fi
+  if [[ -f "$ACTIVE_FILE" ]] && [[ "$(tr -d '[:space:]' < "$ACTIVE_FILE" 2>/dev/null || true)" == "$PROFILE_NAME" ]]; then
+    rm -f -- "$ACTIVE_FILE"
+  fi
+  install_dock_entry
+  echo "Deleted “$PROFILE_NAME”."
 }
 
-cmd_refresh_dock_all() {
-  local names=()
-  local d
+each_chrome_profile() {
+  # Print unique profile names that have a data dir and/or a chrome-* container.
+  local names=() d line name
   if [[ -d "${HOME}/.config/docker-chrome-profiles" ]]; then
     for d in "${HOME}/.config/docker-chrome-profiles"/*; do
       [[ -d "$d" ]] || continue
       names+=("$(basename "$d")")
     done
   fi
-  # Also include running containers
-  local line name
   while IFS= read -r line; do
     [[ "$line" == chrome-* ]] || continue
-    name="${line#chrome-}"
-    names+=("$name")
+    names+=("${line#chrome-}")
   done < <(docker ps -a --filter 'name=chrome-' --format '{{.Names}}' 2>/dev/null || true)
-
-  if [[ -f "$BRAND_ICONS_PY" ]]; then
-    python3 "$BRAND_ICONS_PY" --icons-dir "$ICON_DIR" --no-static || true
-  fi
-
   if ((${#names[@]} == 0)); then
-    set_profile default
-    install_dock_entry
-    return
+    return 0
   fi
+  printf '%s\n' "${names[@]}" | sort -u
+}
 
-  # Unique names
-  printf '%s\n' "${names[@]}" | sort -u | while read -r name; do
+cmd_pause_all() {
+  local name status
+  while IFS= read -r name; do
     [[ "$name" =~ ^[a-zA-Z0-9_-]{1,64}$ ]] || continue
     set_profile "$name"
-    install_dock_entry
-  done
+    status="$(container_status)"
+    [[ "$status" == "running" ]] || continue
+    echo "Pausing: $PROFILE_NAME"
+    docker pause "$CONTAINER_NAME"
+  done < <(each_chrome_profile)
+  PROFILE_NAME=""
+  PROFILE_ICON_FILE=""
+  install_dock_entry
+}
+
+cmd_resume_all() {
+  local name status
+  while IFS= read -r name; do
+    [[ "$name" =~ ^[a-zA-Z0-9_-]{1,64}$ ]] || continue
+    set_profile "$name"
+    status="$(container_status)"
+    [[ "$status" == "paused" ]] || continue
+    echo "Resuming: $PROFILE_NAME"
+    unpause_profile || true
+  done < <(each_chrome_profile)
+  PROFILE_NAME=""
+  PROFILE_ICON_FILE=""
+  install_dock_entry
+}
+
+cmd_stop_all() {
+  local name
+  while IFS= read -r name; do
+    [[ "$name" =~ ^[a-zA-Z0-9_-]{1,64}$ ]] || continue
+    set_profile "$name"
+    if docker inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
+      echo "Stopping: $PROFILE_NAME"
+      docker rm -f "$CONTAINER_NAME" >/dev/null
+    fi
+  done < <(each_chrome_profile)
+  PROFILE_NAME=""
+  PROFILE_ICON_FILE=""
+  install_dock_entry
+}
+
+cmd_refresh_dock() {
+  install_dock_entry
+}
+
+cmd_refresh_dock_all() {
+  local name
+  while IFS= read -r name; do
+    [[ "$name" =~ ^[a-zA-Z0-9_-]{1,64}$ ]] || continue
+    set_profile "$name"
+    ensure_profile_gui_icon
+  done < <(each_chrome_profile)
+  PROFILE_NAME=""
+  PROFILE_ICON_FILE=""
+  install_dock_entry
 }
 
 cmd_focus() {
@@ -498,6 +1594,15 @@ main() {
     status)
       cmd_status
       ;;
+    pause-all)
+      cmd_pause_all
+      ;;
+    resume-all)
+      cmd_resume_all
+      ;;
+    stop-all)
+      cmd_stop_all
+      ;;
     refresh-dock)
       if [[ -n "${2:-}" ]]; then
         set_profile "$2"
@@ -506,7 +1611,7 @@ main() {
         cmd_refresh_dock_all
       fi
       ;;
-    run|activate|pause|resume|stop)
+    run|activate|pause|resume|stop|delete)
       set_profile "${2:-default}"
       case "$cmd" in
         run)           cmd_run ;;
@@ -514,6 +1619,7 @@ main() {
         pause)         cmd_pause ;;
         resume)        cmd_resume ;;
         stop)          cmd_stop ;;
+        delete)        cmd_delete ;;
       esac
       ;;
     -h|--help|help)

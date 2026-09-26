@@ -150,8 +150,15 @@
       font-weight: 500;
     }
 
-    .theme-toggle {
+    .header-tools {
       flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 0.55rem;
+    }
+
+    .theme-toggle {
       display: inline-flex;
       gap: 0.2rem;
       padding: 0.2rem;
@@ -173,6 +180,76 @@
       background: var(--elevated);
       color: var(--ink);
       box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    }
+
+    .adv-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.55rem;
+      padding: 0;
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: 0.78rem;
+      font-weight: 650;
+      cursor: pointer;
+      letter-spacing: -0.01em;
+    }
+
+    .adv-toggle:hover { color: var(--ink); }
+    .adv-toggle.is-on { color: var(--ink); }
+
+    .adv-switch {
+      position: relative;
+      width: 2.15rem;
+      height: 1.25rem;
+      border-radius: 980px;
+      background: var(--btn-ghost);
+      border: 1px solid var(--line);
+      transition: background 0.15s ease, border-color 0.15s ease;
+      flex-shrink: 0;
+    }
+
+    .adv-toggle.is-on .adv-switch {
+      background: color-mix(in srgb, var(--accent) 22%, transparent);
+      border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+    }
+
+    .adv-knob {
+      position: absolute;
+      top: 1px;
+      left: 1px;
+      width: calc(1.25rem - 4px);
+      height: calc(1.25rem - 4px);
+      border-radius: 50%;
+      background: var(--elevated);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+      transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .adv-toggle.is-on .adv-knob {
+      transform: translateX(0.9rem);
+      background: var(--accent);
+    }
+
+    .fleet-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      padding: 0.65rem 1.15rem 0.85rem;
+      border-top: 1px solid var(--line);
+      background: var(--compose);
+    }
+
+    .fleet-bar .hint {
+      flex: 1 1 100%;
+      margin: 0 0 0.15rem;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
     }
 
     .setup-banner {
@@ -544,22 +621,35 @@
         <h1 class="brand">Docked Browser</h1>
         <p class="lede">One Chrome per name. Pause what you’re not using.</p>
       </div>
-      <div class="theme-toggle" role="group" aria-label="Appearance">
+      <div class="header-tools">
+        <div class="theme-toggle" role="group" aria-label="Appearance">
+          <button
+            type="button"
+            :class="{ 'is-on': theme === 'light' }"
+            @click="setTheme('light')"
+          >Light</button>
+          <button
+            type="button"
+            :class="{ 'is-on': theme === 'dark' }"
+            @click="setTheme('dark')"
+          >Dark</button>
+          <button
+            type="button"
+            :class="{ 'is-on': theme === 'system' }"
+            @click="setTheme('system')"
+          >System</button>
+        </div>
         <button
           type="button"
-          :class="{ 'is-on': theme === 'light' }"
-          @click="setTheme('light')"
-        >Light</button>
-        <button
-          type="button"
-          :class="{ 'is-on': theme === 'dark' }"
-          @click="setTheme('dark')"
-        >Dark</button>
-        <button
-          type="button"
-          :class="{ 'is-on': theme === 'system' }"
-          @click="setTheme('system')"
-        >System</button>
+          class="adv-toggle"
+          :class="{ 'is-on': advanced }"
+          :aria-pressed="advanced.toString()"
+          title="CPU/RAM, fleet actions, and logs"
+          @click="setAdvanced(!advanced)"
+        >
+          <span class="adv-switch" aria-hidden="true"><span class="adv-knob"></span></span>
+          Advanced
+        </button>
       </div>
     </header>
 
@@ -580,12 +670,12 @@
           pattern="[a-zA-Z0-9_-]*"
           title="Letters, numbers, dash, underscore"
           :disabled="busy"
-          @keydown.enter.prevent="canOpenTyped && run('run')"
+          @keydown.enter.prevent="canOpenTyped && run(selectedState === 'paused' ? 'activate' : 'run')"
         />
         <button
           type="button"
           class="btn-primary"
-          @click="run('run')"
+          @click="run(selectedState === 'paused' ? 'activate' : 'run')"
           :disabled="busy || !canOpenTyped"
           :title="openTitle"
         >Open</button>
@@ -642,9 +732,9 @@
                 <p class="sub">
                   <span class="pill">
                     <span class="dot" :class="row.paused ? 'warn' : 'on'"></span>
-                    <span x-text="row.paused ? 'Paused' : 'Open'"></span>
+                    <span x-text="row.paused ? (row.auto_paused ? 'Auto-sleep' : 'Paused') : 'Open'"></span>
                   </span>
-                  <span class="res" x-show="statLine(row.profile)" x-text="statLine(row.profile)"></span>
+                  <span class="res" x-show="advanced && statLine(row.profile)" x-text="statLine(row.profile)"></span>
                 </p>
               </div>
 
@@ -660,8 +750,9 @@
                   type="button"
                   class="btn-resume"
                   x-show="row.paused"
-                  @click="run('resume', row.profile)"
+                  @click="run('activate', row.profile)"
                   :disabled="busy"
+                  :title="'Resume “' + row.profile + '”'"
                 >Resume</button>
                 <button
                   type="button"
@@ -723,8 +814,9 @@
                 <button
                   type="button"
                   class="btn-primary"
-                  @click="run('run', row.profile)"
+                  @click="run('activate', row.profile)"
                   :disabled="busy || !imageBuilt"
+                  :title="'Open “' + row.profile + '”'"
                 >Open</button>
               </div>
             </div>
@@ -733,6 +825,31 @@
       </template>
 
       <p class="busy" x-show="busy" x-text="busyText"></p>
+
+      <div class="fleet-bar" x-show="advanced && liveRows.length" x-cloak>
+        <p class="hint">All open browsers</p>
+        <button
+          type="button"
+          class="btn-pause"
+          @click="run('pause-all')"
+          :disabled="busy || !canPauseAll"
+          title="Pause every running browser"
+        >Pause all</button>
+        <button
+          type="button"
+          class="btn-resume"
+          @click="run('resume-all')"
+          :disabled="busy || !canResumeAll"
+          title="Resume every paused browser"
+        >Resume all</button>
+        <button
+          type="button"
+          class="btn-stop"
+          @click="run('stop-all')"
+          :disabled="busy || !liveRows.length"
+          title="Close every open browser"
+        >Close all</button>
+      </div>
     </div>
 
     <details class="foot">
@@ -746,15 +863,23 @@
           </div>
           <div>
             <dt>Pause</dt>
-            <dd>Sleeps it in RAM (almost no CPU). Resume wakes it. Pause does not free memory.</dd>
+            <dd>Sleeps it in RAM (almost no CPU). Unused profiles auto-sleep via predict-sleep (ambient LinUCB). Resume opens that exact profile.</dd>
           </div>
           <div>
             <dt>Close</dt>
             <dd>Quits the window. Bookmarks stay for next time.</dd>
           </div>
           <div>
+            <dt>Delete</dt>
+            <dd>Erases that saved browser for good (cookies, bookmarks, icon). Use below when Advanced is on.</dd>
+          </div>
+          <div>
             <dt>Icon</dt>
             <dd>Click the picture to set a dock icon. Hover and tap × to reset.</dd>
+          </div>
+          <div>
+            <dt>Advanced</dt>
+            <dd>Toggle in the header for CPU/RAM, pause/resume/close all, maintenance tools, and the activity log.</dd>
           </div>
         </dl>
         <div class="help-grid">
@@ -784,15 +909,53 @@
             </ul>
           </div>
         </div>
-        <p style="margin-top:1rem">
-          <button type="button" class="btn-ghost" @click="run('build')" :disabled="busy || !imageBuilt">
-            Update Chrome install
-          </button>
-          <button type="button" class="btn-ghost" @click="refresh(); refreshStats()" :disabled="busy">
-            Refresh now
-          </button>
-        </p>
-        <pre class="log" x-text="log"></pre>
+        <div class="maint" x-show="advanced" style="margin-top:1rem">
+          <p class="group-label" style="padding-left:0;padding-right:0">This browser</p>
+          <p class="help" style="margin:0 0 0.55rem">
+            Acts on the name selected above<span x-show="profile"> — <strong x-text="profile"></strong></span>.
+          </p>
+          <p style="margin:0;display:flex;flex-wrap:wrap;gap:0.35rem">
+            <button
+              type="button"
+              class="btn-stop"
+              @click="confirmDelete()"
+              :disabled="busy || !profile || !canDelete"
+              title="Stop and permanently erase this profile’s data"
+            >Delete saved browser…</button>
+          </p>
+          <p class="group-label" style="padding-left:0;padding-right:0;padding-top:1rem">Predict sleep</p>
+          <p class="help" style="margin:0 0 0.55rem">
+            Learns when unused profiles can pause (LinUCB, same idea as ambient-sleep).
+            Updates: <span x-text="predictUpdates"></span>.
+          </p>
+          <p style="margin:0;display:flex;flex-wrap:wrap;gap:0.35rem;align-items:center">
+            <button
+              type="button"
+              class="adv-toggle"
+              :class="{ 'is-on': predictSleep }"
+              :aria-pressed="predictSleep ? 'true' : 'false'"
+              @click="setPredictSleep(!predictSleep)"
+              :disabled="busy"
+              title="Toggle auto-pause for all profiles"
+            >
+              <span class="adv-switch" aria-hidden="true"><span class="adv-knob"></span></span>
+              <span x-text="predictSleep ? 'Auto-sleep on' : 'Auto-sleep off'"></span>
+            </button>
+          </p>
+          <p class="group-label" style="padding-left:0;padding-right:0;padding-top:1rem">All browsers</p>
+          <p class="help" style="margin:0 0 0.55rem">
+            Shared Chrome image and this window’s list — not one instance.
+          </p>
+          <p style="margin:0;display:flex;flex-wrap:wrap;gap:0.35rem">
+            <button type="button" class="btn-ghost" @click="run('build')" :disabled="busy || !imageBuilt">
+              Update Chrome install
+            </button>
+            <button type="button" class="btn-ghost" @click="refresh(); refreshStats()" :disabled="busy">
+              Refresh list
+            </button>
+          </p>
+        </div>
+        <pre class="log" x-show="advanced" x-text="log"></pre>
       </div>
     </details>
   </div>
@@ -813,6 +976,9 @@
         timer: null,
         statsTimer: null,
         theme: "system",
+        advanced: false,
+        predictSleep: true,
+        predictUpdates: 0,
         _mq: null,
 
         get selected() {
@@ -828,7 +994,11 @@
         },
 
         get canRun() {
-          return this.selectedState === "idle" || this.selectedState === "stopped";
+          return (
+            this.selectedState === "idle" ||
+            this.selectedState === "stopped" ||
+            this.selectedState === "paused"
+          );
         },
 
         get canOpenTyped() {
@@ -838,7 +1008,8 @@
         get openTitle() {
           if (!this.imageBuilt) return "Install Chrome first";
           if (!this.profile) return "Type a name";
-          if (!this.canRun) return "Already open — use Pause or Close in the list";
+          if (this.selectedState === "paused") return "Resume this browser";
+          if (this.selectedState === "running") return "Already open — use Pause or Close in the list";
           return "Open this browser";
         },
 
@@ -858,6 +1029,7 @@
               state: c ? c.state : "stopped",
               paused: !!(c && c.paused),
               running: !!(c && c.running),
+              auto_paused: !!(c && c.auto_paused),
             };
           });
         },
@@ -872,6 +1044,20 @@
           return this.browserRows
             .filter((r) => !r.running && !r.paused)
             .sort((a, b) => a.profile.localeCompare(b.profile));
+        },
+
+        get canPauseAll() {
+          return this.liveRows.some((r) => r.running);
+        },
+
+        get canResumeAll() {
+          return this.liveRows.some((r) => r.paused);
+        },
+
+        get canDelete() {
+          const name = (this.profile || "").trim();
+          if (!name) return false;
+          return this.browserRows.some((r) => r.profile === name);
         },
 
         statsFor(name) {
@@ -910,16 +1096,31 @@
         init() {
           const pref = document.documentElement.getAttribute("data-theme-pref") || "system";
           this.applyTheme(pref, false);
+          try {
+            this.advanced = localStorage.getItem("docked-browser-advanced") === "1";
+          } catch (_) {}
           this.refresh().then(() => {
             if (!this.profile) {
               const live = this.liveRows[0];
               this.profile = (live && live.profile) || this.profiles[0] || "";
             }
           });
-          this.refreshStats();
+          this.syncStatsPolling();
           this.timer = setInterval(() => {
             if (!this.busy) this.refresh(true);
           }, 4000);
+        },
+
+        syncStatsPolling() {
+          if (this.statsTimer) {
+            clearInterval(this.statsTimer);
+            this.statsTimer = null;
+          }
+          if (!this.advanced) {
+            this.stats = [];
+            return;
+          }
+          this.refreshStats();
           this.statsTimer = setInterval(() => this.refreshStats(), 10000);
         },
 
@@ -976,7 +1177,33 @@
           } catch (_) {}
         },
 
+        async setAdvanced(on) {
+          this.advanced = !!on;
+          try {
+            localStorage.setItem("docked-browser-advanced", this.advanced ? "1" : "0");
+          } catch (_) {}
+          this.syncStatsPolling();
+          try {
+            await fetch("/api/prefs", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ advanced: this.advanced }),
+            });
+          } catch (_) {}
+        },
+
+        async confirmDelete() {
+          const name = (this.profile || "").trim();
+          if (!name || this.busy || !this.canDelete) return;
+          const ok = window.confirm(
+            `Delete “${name}” permanently?\n\nThis closes it if open and erases bookmarks, cookies, and its icon. This cannot be undone.`
+          );
+          if (!ok) return;
+          await this.run("delete", name);
+        },
+
         async refreshStats() {
+          if (!this.advanced) return;
           try {
             const res = await fetch("/api/stats");
             if (!res.ok) return;
@@ -996,11 +1223,43 @@
           this.profiles = data.profiles || [];
           this.icons = data.icons || {};
           this.iconTick = Date.now();
+          if (data.predict_sleep) {
+            this.predictSleep = data.predict_sleep.enabled !== false;
+            this.predictUpdates = data.predict_sleep.updates || 0;
+          }
           if (data.theme_pref === "dark" || data.theme_pref === "light" || data.theme_pref === "system") {
             this.applyTheme(data.theme_pref, true);
           } else if (data.theme === "dark" || data.theme === "light") {
             this.applyTheme(data.theme, true);
           }
+          // Prefer localStorage for Advanced; only adopt server when unset.
+          if (typeof data.advanced === "boolean") {
+            let hasLocal = false;
+            try {
+              hasLocal = localStorage.getItem("docked-browser-advanced") !== null;
+            } catch (_) {}
+            if (!hasLocal) {
+              this.advanced = data.advanced;
+              try {
+                localStorage.setItem("docked-browser-advanced", this.advanced ? "1" : "0");
+              } catch (_) {}
+              this.syncStatsPolling();
+            }
+          }
+        },
+
+        async setPredictSleep(on) {
+          this.predictSleep = !!on;
+          try {
+            const res = await fetch("/api/predict-sleep", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ enabled: this.predictSleep }),
+            });
+            const data = await res.json();
+            if (data && typeof data.enabled === "boolean") this.predictSleep = data.enabled;
+            if (typeof data.updates === "number") this.predictUpdates = data.updates;
+          } catch (_) {}
         },
 
         async onIconPicked(event) {
@@ -1068,8 +1327,9 @@
 
         async run(action, profileOverride) {
           if (this.busy) return;
+          const fleet = action === "pause-all" || action === "resume-all" || action === "stop-all";
           const profile = (profileOverride || this.profile || "").trim();
-          if (action !== "build" && !profile) {
+          if (action !== "build" && !fleet && !profile) {
             this.appendLog("Type a browser name first.");
             return;
           }
@@ -1087,12 +1347,23 @@
           const allowed = {
             build: true,
             run: state === "idle" || state === "stopped",
+            activate: state === "idle" || state === "stopped" || state === "paused" || state === "running",
             pause: state === "running",
             resume: state === "paused",
             stop: state === "running" || state === "paused" || state === "stopped",
+            delete: this.browserRows.some((r) => r.profile === profile),
+            "pause-all": this.canPauseAll,
+            "resume-all": this.canResumeAll,
+            "stop-all": this.liveRows.length > 0,
           };
           if (!allowed[action]) {
-            this.appendLog(`“${action}” isn’t available while this browser is ${state}.`);
+            if (action === "delete") {
+              this.appendLog("Pick a saved browser in the list first.");
+            } else if (fleet) {
+              this.appendLog(`“${action}” isn’t available right now.`);
+            } else {
+              this.appendLog(`“${action}” isn’t available while this browser is ${state}.`);
+            }
             return;
           }
 
@@ -1100,18 +1371,26 @@
           const labels = {
             build: "Installing / updating Chrome… this can take a few minutes.",
             run: `Opening “${profile}”…`,
+            activate: state === "paused" ? `Resuming “${profile}”…` : `Opening “${profile}”…`,
             pause: `Pausing “${profile}”…`,
             resume: `Resuming “${profile}”…`,
             stop: `Closing “${profile}”…`,
+            delete: `Deleting “${profile}”…`,
+            "pause-all": "Pausing all open browsers…",
+            "resume-all": "Resuming all paused browsers…",
+            "stop-all": "Closing all open browsers…",
           };
           this.busyText = labels[action] || "Working…";
           this.appendLog(this.busyText);
 
           try {
+            const body = fleet || action === "build"
+              ? { action }
+              : { action, profile: profile || "default" };
             const res = await fetch("/api/action", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ action, profile: profile || "default" }),
+              body: JSON.stringify(body),
             });
             const data = await res.json();
             this.appendLog((data.ok ? "Done" : "Something went wrong") + "\n" + (data.output || ""));
@@ -1120,6 +1399,13 @@
             }
             await this.refresh(true);
             if (action !== "build") this.refreshStats();
+            if (action === "delete") {
+              const gone = !this.browserRows.some((r) => r.profile === profile);
+              if (gone) {
+                const next = this.liveRows[0] || this.savedRows[0];
+                this.profile = (next && next.profile) || "";
+              }
+            }
           } catch (err) {
             this.appendLog("Request failed: " + err);
           } finally {

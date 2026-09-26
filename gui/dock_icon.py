@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Build a static 128×128 PNG dock icon for a Docked Browser profile.
+"""Build a static 128×128 PNG badge for a Docked Browser profile.
 
-CLI (called by bin/docked-browser install_dock_entry):
+Used as that profile’s Dash icon and in the web UI / focus modal.
+
+CLI (called by bin/docked-browser ensure_profile_gui_icon):
     dock_icon.py <name> <hex_color> <custom_path_or_empty> <output_png>
 
 - If custom_path exists → thumbnail that image onto a transparent 128² canvas.

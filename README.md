@@ -2,16 +2,17 @@
 
 **Chrome profiles with clearer cues — so you can focus on one job at a time.**
 
-Same idea as Chrome’s built-in profiles (separate cookies/logins per name). Docked Browser adds **per-profile dock icons**, pause/resume, an optional focus modal/tray, and a tiny local web UI — without touching your normal host Chrome.
+Same idea as Chrome’s built-in profiles (separate cookies/logins per name). Docked Browser adds a **dock icon per profile**, pause/resume, an optional focus modal/tray, and a tiny local web UI — without touching your normal host Chrome.
 
 **Unofficial.** Not affiliated with Google. Chrome is a trademark of Google LLC.
 
 **One common use case:** keep work / personal / shopping as separate windows so you stay in one context instead of tab-juggling. Other people use it differently — pick whatever names fit your head.
 
 ### Why use it
-- **Per-profile dock icons** — click the icon, that Chrome opens (like a normal app)
+- **One dock icon per profile** — click that icon to open it; right-click still has Profiles…, Pause all, and Close all
 - **Pause** — freeze a window in RAM (almost no CPU) and come back later
-- **Optional focus modal / tray / hotkey** — pick profiles without hunting windows
+- **Predict sleep** — unused profiles auto-pause (LinUCB, same formula as ambient-sleep)
+- **Focus modal / tray / hotkey** — pick profiles without hunting windows
 - **Leaves host Chrome alone** — runs in Docker beside your everyday browser
 - **Tiny control UI** — local page on `127.0.0.1`
 
@@ -38,13 +39,13 @@ Target host: Linux + Docker (tested on Lubuntu / GNOME Wayland + NVIDIA).
 # 2) Optional GPU
 ./bin/install-nvidia-toolkit.sh
 
-# 3) Open a profile (creates a dock icon you can pin)
+# 3) Open a profile (each name gets its own dock icon you can pin)
 ./bin/docked-browser run work
 
 # 4) Optional: tray + hotkey + web UI
 ./bin/install-autostart
 ./bin/install-hotkey          # Super+Shift+D → focus modal
-./bin/start-gui               # http://127.0.0.1:8787yyy
+./bin/start-gui               # http://127.0.0.1:8787
 ```
 
 CLI:
@@ -54,11 +55,11 @@ CLI:
 ./bin/docked-browser pause work
 ./bin/docked-browser resume work
 ./bin/docked-browser stop work
-./bin/docked-browser refresh-dock      # rebuild all profile dock icons
-./bin/docked-browser focus             # optional picker
+./bin/docked-browser refresh-dock      # rebuild each profile’s dock icon
+./bin/docked-browser focus             # profile picker (also dock left-click)
 ```
 
-**Dock:** each profile is its own app (`Docked · work`, etc.). Left-click = open/focus. Right-click / long-press shows only valid actions for the current state (Open, or Pause/Close, or Resume/Close). Pin the ones you use from the app grid / Dash.
+**Dock:** one icon per profile (`Docked · name`). Left-click opens that profile. Right-click shows Profiles… plus Pause all / Resume all / Close all when any containers are live. Pin the ones you want from the Dash.
 
 ## Layout
 
@@ -68,6 +69,7 @@ CLI:
 │   ├── docked-browser           # CLI + dock entries
 │   ├── focus-modal              # optional GTK picker
 │   ├── docked-tray              # optional tray
+│   ├── docked-predict-sleep     # LinUCB auto-pause daemon
 │   ├── start-gui
 │   ├── install-autostart
 │   ├── install-hotkey
@@ -75,7 +77,8 @@ CLI:
 ├── gui/
 │   ├── control.py
 │   ├── server.py
-│   ├── dock_icon.py             # per-profile dock badges
+│   ├── predict_sleep.py         # per-profile LinUCB (ambient-sleep port)
+│   ├── dock_icon.py             # per-profile GUI badges (web / modal)
 │   ├── brand_icons.py           # unified web/tray/modal brand glyphs
 │   ├── templates/
 │   └── static/                  # favicons = web brand glyph
@@ -91,10 +94,13 @@ CLI:
 |----------|----------|
 | `~/.config/docker-chrome-profiles/<name>/` | Chrome profile data |
 | `…/<name>/dock-icon.png` | Optional custom dock icon source |
-| `~/.local/share/docked-browser/icons/docked-browser-<name>.png` | Installed dock PNG |
-| `…/docked-browser.png` / `-tray.png` / `-modal.png` | Brand icons (list / menu / focus) |
-| `~/.local/share/applications/docked-browser-<name>.desktop` | Dock / launcher entry |
-| `~/.local/share/docked-browser/prefs.json` | Shared UI prefs (theme) |
+| `~/.local/share/docked-browser/icons/docked-browser.png` | Brand glyph (web / tray / modal) |
+| `…/docked-browser-<name>.png` | That profile’s Dash icon and GUI badge |
+| `…/docked-browser-tray.png` / `-modal.png` | Tray / focus brand glyphs |
+| `~/.local/share/applications/docked-browser-<name>.desktop` | That profile’s dock entry |
+| `~/.local/share/docked-browser/prefs.json` | Shared UI prefs (theme, advanced) |
+| `~/.local/share/docked-browser/linucb.json` | Predict-sleep LinUCB checkpoint |
+| `~/.local/share/docked-browser/predict-sleep-state.json` | Per-profile idle / pending |
 | `~/Downloads` | Shared downloads (read/write) |
 | `$HOME` (read-only in container) | Same host paths for file uploads (WhatsApp, etc.) |
 
@@ -107,7 +113,9 @@ Naming:
 ## Pause vs stop
 
 - **Pause** (`docker pause`): frozen in **RAM**, almost no CPU — does **not** free memory.
-- **Stop**: removes the container; profile data on disk is kept.
+- **Predict sleep**: unused running profiles are paused automatically (60s AI floor, 10 min hard breaker). Resume / Open always wake the **exact** named profile.
+- **Stop / Close**: removes the container; profile data on disk is kept.
+- **Delete**: stop + erase that profile’s data directory and custom icon (permanent).
 
 ## Dependencies
 

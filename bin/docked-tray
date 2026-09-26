@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 
 import gi
@@ -27,7 +28,9 @@ from control import (  # noqa: E402
     profile_icon_path,
     run_cli,
     save_prefs,
+    wayland_activation_token,
 )
+from predict_sleep import ensure_daemon  # noqa: E402
 
 APP_ID = "org.dockedbrowser.tray"
 
@@ -150,7 +153,8 @@ class Tray:
             item = Gtk.MenuItem.new_with_label(label)
 
             def on_activate(_w: Gtk.MenuItem) -> None:
-                run_cli(action, profile)
+                token = wayland_activation_token() if action == "activate" else ""
+                run_cli(action, profile, activation_token=token or None)
                 self._rebuild_menu()
 
             item.connect("activate", on_activate)
@@ -158,6 +162,7 @@ class Tray:
 
         add("Focus", "activate")
         add("Pause", "pause")
+        add("Resume", "activate")
         add("Close", "stop")
 
     def _on_theme_pick(self, item: Gtk.RadioMenuItem, theme: str) -> None:
@@ -181,9 +186,15 @@ def main() -> int:
 
     cli = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docked-browser")
     ensure_brand_icons()
-    if not TRAY_ICON.is_file() and not LAUNCHER_ICON.is_file() and os.path.isfile(cli):
-        os.system(f'"{cli}" refresh-dock >/dev/null 2>&1')
+    if os.path.isfile(cli):
+        subprocess.Popen(
+            [cli, "refresh-dock"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
 
+    ensure_daemon()
     Tray()
     Gtk.main()
     return 0

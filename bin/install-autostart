@@ -41,10 +41,27 @@ StartupNotify=false
 Categories=Network;Utility;
 EOF
 
-# Ensure profile dock entries exist
+# Predict-sleep daemon (LinUCB auto-pause for unused profiles)
+# Safe if GUI/tray already hold the lock — exits quietly.
+cat > "$DEST_DIR/docked-browser-predict-sleep.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Docked Browser Predict Sleep
+Comment=Auto-pause unused Chrome profiles (ambient-sleep LinUCB)
+Exec=$BIN_DIR/docked-predict-sleep
+Path=$ROOT_DIR
+Terminal=false
+X-GNOME-Autostart-enabled=true
+StartupNotify=false
+Categories=Network;Utility;
+EOF
+
+# Ensure shared dock entry exists
 "$BIN_DIR/docked-browser" refresh-dock >/dev/null || true
 
 echo "Installed autostart → $DEST_DIR/docked-browser.desktop"
 echo "Installed autostart → $DEST_DIR/docked-browser-tray.desktop"
+echo "Installed autostart → $DEST_DIR/docked-browser-predict-sleep.desktop"
 echo "Tip: ./bin/install-hotkey   # Super+Shift+D opens the focus modal"
-echo "Pin profile icons from the app grid (Docked · <name>)."
+echo "Pin the shared Docked Browser icon once it appears in the Dash."

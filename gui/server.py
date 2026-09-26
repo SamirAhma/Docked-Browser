@@ -13,11 +13,13 @@ HTTP API
 GET  /              → HTML UI
 GET  /api/status    → {image_built, containers[], profiles[], icons{}, theme}
 GET  /api/stats     → {containers:[{profile,cpu_pct,mem_used,mem_limit,mem_pct,state}]}
-GET  /api/prefs     → {theme}
-POST /api/prefs     → {theme: light|dark|system}
+GET  /api/prefs     → {theme, advanced}
+POST /api/prefs     → {theme?: light|dark|system, advanced?: bool}
 GET  /api/icon/<p>  → custom PNG bytes (404 if none)
-POST /api/action    → {action: build|run|pause|resume|stop, profile?}
+POST /api/action    → {action: build|run|activate|pause|resume|stop|delete|pause-all|resume-all|stop-all, profile?}
 POST /api/icon      → {profile, action: set|clear, image?: data-URL}
+GET  /api/predict-sleep → {enabled, updates, profiles{}, log[]}
+POST /api/predict-sleep → {enabled?: bool}
 
 Profile names: ``^[a-zA-Z0-9_-]{1,64}$``
 Custom icons live at ``~/.config/docker-chrome-profiles/<name>/dock-icon.png``.
@@ -35,7 +37,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from control import get_theme, prefs_payload, save_prefs
+from control import get_theme, prefs_payload, save_prefs, session_wants_x11
+from predict_sleep import ensure_daemon, mark_used, set_enabled as predict_set_enabled
+from predict_sleep import status_payload as predict_status
 
 # --- Constants ---------------------------------------------------------------
 GUI_DIR = Path(__file__).resolve().parent
@@ -50,7 +54,22 @@ PROFILE_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 HOST = os.environ.get("DOCKED_BROWSER_HOST") or os.environ.get("COCKPIT_HOST", "127.0.0.1")
 PORT = int(os.environ.get("DOCKED_BROWSER_PORT") or os.environ.get("COCKPIT_PORT", "8787"))
 MAX_ICON_BYTES = 2 * 1024 * 1024  # 2 MB
-ALLOWED_ACTIONS = frozenset({"build", "run", "pause", "resume", "stop"})
+ALLOWED_ACTIONS = frozenset(
+    {
+        "build",
+        "run",
+        "activate",
+        "pause",
+        "resume",
+        "stop",
+        "delete",
+        "pause-all",
+        "resume-all",
+        "stop-all",
+    }
+)
+OPEN_ACTIONS = frozenset({"run", "activate", "resume"})
+FLEET_ACTIONS = frozenset({"pause-all", "resume-all", "stop-all"})
 
 # Public static files (favicon etc.) — basename only, no path traversal
 STATIC_FILES: dict[str, tuple[Path, str]] = {
@@ -70,7 +89,10 @@ def desktop_env() -> dict[str, str]:
     runtime = env.get("XDG_RUNTIME_DIR") or f"/run/user/{uid}"
     env.setdefault("XDG_RUNTIME_DIR", runtime)
     env.setdefault("DISPLAY", ":0")
-    if not env.get("WAYLAND_DISPLAY") and Path(runtime, "wayland-0").exists():
+    # A leftover wayland-0 from a previous GNOME login is not this X11 session.
+    if session_wants_x11(env):
+        env.pop("WAYLAND_DISPLAY", None)
+    elif not env.get("WAYLAND_DISPLAY") and Path(runtime, "wayland-0").exists():
         env["WAYLAND_DISPLAY"] = "wayland-0"
     return env
 
@@ -104,7 +126,13 @@ def run_cockpit(action: str, profile: str | None = None) -> dict:
         return {"ok": False, "output": str(exc)}
 
     output = (result.stdout or "") + (result.stderr or "")
-    return {"ok": result.returncode == 0, "output": output.strip() or "(no output)"}
+    ok = result.returncode == 0
+    if ok and profile and action in OPEN_ACTIONS:
+        try:
+            mark_used(profile)
+        except Exception:
+            pass
+    return {"ok": ok, "output": output.strip() or "(no output)"}
 
 
 # --- Docker status / profiles ------------------------------------------------
@@ -178,14 +206,30 @@ def image_built() -> bool:
 
 def status_payload() -> dict:
     profiles = known_profiles()
+    prefs = prefs_payload()
+    predict = predict_status()
+    auto_paused = {
+        name
+        for name, info in (predict.get("profiles") or {}).items()
+        if info.get("auto_paused_at")
+    }
+    containers = docker_chrome_status()
+    for row in containers:
+        row["auto_paused"] = row["profile"] in auto_paused and row.get("paused", False)
     return {
         "image_built": image_built(),
-        "containers": docker_chrome_status(),
+        "containers": containers,
         "profiles": profiles,
         "icons": {name: icon_path(name).is_file() for name in profiles},
         "theme": get_theme(),  # resolved light|dark for painting
-        "theme_pref": prefs_payload()["theme"],
-        "theme_resolved": prefs_payload()["theme_resolved"],
+        "theme_pref": prefs["theme"],
+        "theme_resolved": prefs["theme_resolved"],
+        "advanced": prefs["advanced"],
+        "predict_sleep": {
+            "enabled": predict.get("enabled", True),
+            "updates": predict.get("updates", 0),
+            "last_reward": predict.get("last_reward"),
+        },
     }
 
 
@@ -454,6 +498,10 @@ class CockpitHandler(BaseHTTPRequestHandler):
             self._send_json(200, prefs_payload())
             return
 
+        if path == "/api/predict-sleep":
+            self._send_json(200, predict_status())
+            return
+
         if path.startswith("/api/icon/"):
             profile = unquote(path[len("/api/icon/") :])
             if not PROFILE_RE.match(profile):
@@ -487,6 +535,17 @@ class CockpitHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, **prefs})
             return
 
+        if path == "/api/predict-sleep":
+            if not isinstance(payload, dict):
+                self._send_json(400, {"ok": False, "output": "Invalid JSON"})
+                return
+            if "enabled" in payload:
+                result = predict_set_enabled(bool(payload["enabled"]))
+                self._send_json(200, {"ok": True, **result})
+                return
+            self._send_json(200, {"ok": True, **predict_status()})
+            return
+
         if path == "/api/icon":
             profile = str(payload.get("profile", "")).strip()
             action = str(payload.get("action", "set")).strip().lower()
@@ -508,8 +567,18 @@ class CockpitHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"ok": False, "output": "Unknown action"})
             return
 
-        if action == "build":
-            result = run_cockpit("build")
+        # Open / Resume always target the exact profile via activate when possible:
+        # paused → unpause, stopped → run, running → focus/active.
+        if action in {"run", "resume"}:
+            rows = {r["profile"]: r for r in docker_chrome_status()}
+            row = rows.get(profile)
+            if action == "resume" or (row and row.get("paused")):
+                action = "activate"
+            elif action == "run" and row and row.get("running"):
+                action = "activate"
+
+        if action == "build" or action in FLEET_ACTIONS:
+            result = run_cockpit(action)
         else:
             result = run_cockpit(action, profile)
 
@@ -520,6 +589,11 @@ class CockpitHandler(BaseHTTPRequestHandler):
 def main() -> None:
     if not TEMPLATE.is_file():
         raise SystemExit(f"Missing template: {TEMPLATE}")
+
+    if ensure_daemon():
+        print("Predict-sleep daemon: running (LinUCB per-profile auto-pause)")
+    else:
+        print("Predict-sleep daemon: already held by another process")
 
     server = ThreadingHTTPServer((HOST, PORT), CockpitHandler)
     print(f"Docked Browser GUI → http://{HOST}:{PORT}")

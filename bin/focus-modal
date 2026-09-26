@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Docked Browser focus modal — quick picker for open Chromes."""
+"""Docked Browser focus modal — picker for every profile."""
 from __future__ import annotations
 
 import os
@@ -16,11 +16,13 @@ GUI_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, GUI_DIR)
 from control import (  # noqa: E402
     get_theme,
-    list_playing_profiles,
+    list_profiles,
     modal_window_icon,
     open_full_gui,
     profile_icon_path,
     run_cli,
+    session_wants_x11,
+    wayland_activation_token,
 )
 
 APP_ID = "org.dockedbrowser.focus"
@@ -259,7 +261,7 @@ class FocusWindow(Gtk.ApplicationWindow):
         self.add(outer)
 
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        title = Gtk.Label(label="Open now")
+        title = Gtk.Label(label="Profiles")
         title.get_style_context().add_class("section-title")
         title.set_halign(Gtk.Align.START)
         title.set_hexpand(True)
@@ -270,7 +272,7 @@ class FocusWindow(Gtk.ApplicationWindow):
         header.pack_end(refresh_btn, False, False, 0)
         outer.pack_start(header, False, False, 0)
 
-        hint = Gtk.Label(label="Click to focus · Right-click to Pause or Close")
+        hint = Gtk.Label(label="Click to open · Right-click to Pause, Resume, or Close")
         hint.set_halign(Gtk.Align.START)
         hint.set_line_wrap(True)
         hint.get_style_context().add_class("hint")
@@ -328,7 +330,7 @@ class FocusWindow(Gtk.ApplicationWindow):
         for child in list(self.list_box.get_children()):
             self.list_box.remove(child)
 
-        items = list_playing_profiles()
+        items = list_profiles()
         if not items:
             self.list_box.add(self._empty_row())
         else:
@@ -347,11 +349,11 @@ class FocusWindow(Gtk.ApplicationWindow):
         box.set_margin_bottom(48)
         box.set_halign(Gtk.Align.CENTER)
 
-        title = Gtk.Label(label="Nothing open")
+        title = Gtk.Label(label="No profiles")
         title.get_style_context().add_class("empty-title")
         box.pack_start(title, False, False, 0)
 
-        body = Gtk.Label(label="Open a browser from the dock\nor the Web UI.")
+        body = Gtk.Label(label="Create one from the Web UI.")
         body.set_justify(Gtk.Justification.CENTER)
         body.set_line_wrap(True)
         body.get_style_context().add_class("empty-body")
@@ -431,6 +433,7 @@ class FocusWindow(Gtk.ApplicationWindow):
 
         add("Focus", "activate")
         add("Pause", "pause")
+        add("Resume", "activate")
         add("Close", "stop")
         menu.show_all()
         menu.popup_at_pointer(event)
@@ -447,16 +450,23 @@ class FocusWindow(Gtk.ApplicationWindow):
         win = self.get_window()
         if win is not None:
             win.set_cursor(Gdk.Cursor.new_from_name(self.get_display(), "wait"))
+        # Taken on this click, before the worker thread, so GNOME will allow
+        # that profile's Chrome to raise its own window.
+        token = wayland_activation_token() if action == "activate" else ""
 
         def work() -> None:
-            result = run_cli(action, profile)
+            result = run_cli(action, profile, activation_token=token or None)
 
             def done() -> None:
                 self._busy = False
                 if win is not None:
                     win.set_cursor(None)
+                if action == "activate" and result.get("ok"):
+                    # Drop the keep-above picker so the Chrome window can show.
+                    self.close()
+                    return
                 self.reload()
-                if not result["ok"] and action != "activate":
+                if not result["ok"]:
                     dlg = Gtk.MessageDialog(
                         transient_for=self,
                         flags=0,
@@ -489,7 +499,10 @@ def main() -> int:
     os.environ.setdefault("DISPLAY", ":0")
     runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
     os.environ.setdefault("XDG_RUNTIME_DIR", runtime)
-    if not os.environ.get("WAYLAND_DISPLAY"):
+    # GTK must stay on the Cinnamon X11 display. A stale wayland-0 is not this session.
+    if session_wants_x11():
+        os.environ.pop("WAYLAND_DISPLAY", None)
+    elif not os.environ.get("WAYLAND_DISPLAY"):
         sock = os.path.join(runtime, "wayland-0")
         if os.path.exists(sock):
             os.environ["WAYLAND_DISPLAY"] = "wayland-0"

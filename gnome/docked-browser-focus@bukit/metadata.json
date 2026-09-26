@@ -1,0 +1,7 @@
+{
+  "uuid": "docked-browser-focus@bukit",
+  "name": "Docked Browser Focus",
+  "description": "Raises the Chrome window that belongs to one Docked Browser profile.",
+  "shell-version": ["49", "50"],
+  "version": 1
+}
