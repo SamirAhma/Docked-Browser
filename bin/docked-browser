@@ -13,7 +13,7 @@
 # Commands: build | run | activate | pause | resume | stop | delete | refresh-dock | status | focus
 # Profile data: ~/.config/docker-chrome-profiles/<name>/
 # Container:    chrome-<name>
-# Dock class:   docked-browser-<name>  (one icon per profile; same right-click menu)
+# Dock class:   docked-browser-<name>  (one icon per profile; Pause/Resume is that profile)
 # Plank:        ~/.config/plank/dockN/launchers/docked-browser-<name>.dockitem
 #               only while chrome-<name> is running (paused and stopped stay off)
 # =============================================================================
@@ -34,8 +34,8 @@ DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 ICON_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/docked-browser/icons"
 STATE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/docked-browser"
 ACTIVE_FILE="$STATE_DIR/active-profile"
-# One Dash icon per profile. Right-click Actions stay the fleet menu
-# (Profiles…, Pause all, Resume all, Close all).
+# One Dash icon per profile. Right-click Pause and Resume run on that profile.
+# Profiles…, Resume all, and Close all stay shared fleet items when valid.
 APP_CLASS=""
 DESKTOP_FILE=""
 
@@ -61,7 +61,7 @@ Commands:
   resume-all            Resume every paused chrome-* container
   stop-all              Stop every chrome-* container
   refresh-dock [name]   Rebuild each profile’s Dash icon (+ GUI badge if name given)
-  focus                 Open the focus modal (dock left-click)
+  focus                 Open the focus modal (Profiles… on the dock menu)
   status                Print profile status as JSON
 
 Examples:
@@ -96,6 +96,15 @@ remember_active() {
     PYTHONPATH="$GUI_DIR${PYTHONPATH:+:$PYTHONPATH}" \
       python3 -c "from predict_sleep import mark_used; mark_used('$PROFILE_NAME')" 2>/dev/null || true
   fi
+}
+
+# Cinnamon pings a window on click. A paused Chrome cannot answer, so the
+# shell shows "is not responding" unless this watcher resumes that profile.
+spawn_wake_watcher() {
+  [[ -f "$GUI_DIR/wake_paused.py" ]] || return 0
+  PYTHONPATH="$GUI_DIR${PYTHONPATH:+:$PYTHONPATH}" \
+    python3 -c 'from wake_paused import ensure_watcher; ensure_watcher()' \
+    >/dev/null 2>&1 || true
 }
 
 profile_color() {
@@ -262,6 +271,7 @@ PY
   # The running shell keeps its previous copy until the next login.
   ensure_activate_class_helper
   ensure_dash_hide_helper
+  ensure_open_workspace_helper
 }
 
 ensure_activate_class_helper() {
@@ -495,6 +505,104 @@ path.write_text(text, encoding="utf-8")
 PY
 }
 
+# Switch to a workspace the user already created. Does not append one.
+ensure_open_workspace_helper() {
+  [[ -f "$FOCUS_HELPER" ]] || return 0
+  if grep -q 'name="OpenWorkspace"' "$FOCUS_HELPER"; then
+    return 0
+  fi
+  python3 - "$FOCUS_HELPER" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+if 'name="OpenWorkspace"' in text:
+    raise SystemExit(0)
+old_schema = """        <method name="SetDashHidden">
+            <arg type="au" direction="in" name="pids" />
+            <arg type="b" direction="in" name="hidden" />
+            <arg type="b" direction="out" name="ok" />
+        </method>"""
+new_schema = old_schema + """
+        <method name="OpenWorkspace">
+            <arg type="s" direction="in" name="class_name" />
+            <arg type="u" direction="in" name="index" />
+            <arg type="b" direction="out" name="ok" />
+        </method>"""
+old_js = """  disable() {"""
+new_js = """  // docked-browser-open-workspace: activate a workspace that already exists.
+  OpenWorkspace(className, index) {
+    try {
+      const idx = Number(index);
+      if (!Number.isInteger(idx) || idx < 0)
+        return false;
+      const manager = global.workspace_manager;
+      if (idx >= manager.get_n_workspaces())
+        return false;
+      const ws = manager.get_workspace_by_index(idx);
+      if (!ws)
+        return false;
+      const wanted = String(className || "").toLowerCase();
+      if (wanted) {
+        for (const actor of global.get_window_actors()) {
+          const win = actor.meta_window;
+          if (!win)
+            continue;
+          const names = [];
+          const push = (value) => {
+            if (value)
+              names.push(String(value).toLowerCase());
+          };
+          try { push(win.get_wm_class()); } catch (_e) {}
+          try { push(win.get_wm_class_instance()); } catch (_e) {}
+          try {
+            if (typeof win.get_gtk_application_id === "function")
+              push(win.get_gtk_application_id());
+          } catch (_e) {}
+          try {
+            const app = Shell.WindowTracker.get_default().get_window_app(win);
+            if (app)
+              push(app.get_id());
+          } catch (_e) {}
+          let hit = false;
+          for (const name of names) {
+            const bare = name.endsWith(".desktop") ? name.slice(0, -8) : name;
+            if (name === wanted || bare === wanted) {
+              hit = true;
+              break;
+            }
+          }
+          if (!hit)
+            continue;
+          try {
+            if (typeof win.is_on_all_workspaces === "function" && win.is_on_all_workspaces())
+              win.unstick();
+          } catch (_e) {}
+          try {
+            if (win.get_workspace() !== ws)
+              win.change_workspace(ws);
+          } catch (_e) {
+            try { win.change_workspace_by_index(idx, false); } catch (_e2) {}
+          }
+        }
+      }
+      ws.activate(global.get_current_time());
+      return true;
+    } catch (_e) {
+      return false;
+    }
+  }
+
+  disable() {"""
+if old_schema not in text:
+    raise SystemExit("Focused Window helper has no SetDashHidden method")
+if text.count(old_js) != 1:
+    raise SystemExit("Focused Window helper disable() anchor is not unique")
+text = text.replace(old_schema, new_schema, 1)
+text = text.replace(old_js, new_js, 1)
+path.write_text(text, encoding="utf-8")
+PY
+}
+
 container_pid_csv() {
   local line main
   local -a pids=()
@@ -551,6 +659,85 @@ sync_paused_dash() {
   fi
 }
 
+# The user creates GNOME workspaces. This file lists profile names under
+# the 1-based workspace number they share. Missing file or missing name:
+# do not switch. The script never creates a workspace or changes Mutter.
+WORKSPACE_MAP="${XDG_CONFIG_HOME:-$HOME/.config}/docked-browser/workspaces.json"
+
+session_is_gnome() {
+  case "${XDG_CURRENT_DESKTOP:-}:${DESKTOP_SESSION:-}" in
+    *[Gg][Nn][Oo][Mm][Ee]*|*[Uu]buntu*) return 0 ;;
+  esac
+  return 1
+}
+
+# Print the 1-based workspace number for PROFILE_NAME, or nothing.
+assigned_workspace_number() {
+  [[ -n "${PROFILE_NAME:-}" ]] || return 0
+  python3 - "$PROFILE_NAME" "$WORKSPACE_MAP" <<'PY'
+import json, pathlib, sys
+name, path = sys.argv[1], pathlib.Path(sys.argv[2])
+if not path.is_file():
+    raise SystemExit(0)
+try:
+    data = json.loads(path.read_text(encoding="utf-8"))
+except (OSError, ValueError):
+    raise SystemExit(0)
+if not isinstance(data, dict):
+    raise SystemExit(0)
+for key, names in data.items():
+    try:
+        number = int(str(key))
+    except (TypeError, ValueError):
+        continue
+    if number < 1:
+        continue
+    if isinstance(names, str):
+        names = [names]
+    if not isinstance(names, list):
+        continue
+    for item in names:
+        if isinstance(item, str) and item == name:
+            print(number)
+            raise SystemExit(0)
+PY
+}
+
+open_workspace_ready() {
+  gdbus introspect --session \
+    --dest org.gnome.Shell \
+    --object-path /org/gnome/shell/extensions/FocusedWindow 2>/dev/null \
+    | grep -q 'name="OpenWorkspace"'
+}
+
+open_profile_workspace() {
+  local class_name="$1" number index reply
+  [[ "${DOCKED_SKIP_WORKSPACE:-}" == "1" ]] && return 0
+  session_is_gnome || return 0
+  session_wants_x11 && return 0
+  [[ -n "${WAYLAND_DISPLAY:-}" ]] || return 0
+  [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" || -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus" ]] || return 0
+  [[ -n "${PROFILE_NAME:-}" ]] || return 0
+  number="$(assigned_workspace_number)" || true
+  [[ "$number" =~ ^[1-9][0-9]*$ ]] || return 0
+  index=$((number - 1))
+  ensure_window_focus_helper
+  # The running Shell imported the helper at login. OpenWorkspace appears
+  # after the next login. Until then ActivateClass still raises the window.
+  if ! open_workspace_ready; then
+    return 0
+  fi
+  reply="$(gdbus call --session \
+    --dest org.gnome.Shell \
+    --object-path /org/gnome/shell/extensions/FocusedWindow \
+    --method org.gnome.shell.extensions.FocusedWindow.OpenWorkspace \
+    "'${class_name}'" "${index}" 2>/dev/null || true)"
+  if [[ "$reply" == "(true,"* ]]; then
+    return 0
+  fi
+  echo "Workspace ${number} does not exist for ${PROFILE_NAME}."
+}
+
 # Focus docked-browser-<profile> without opening another tab.
 # Returns 0 when a matching window was raised (or, on GNOME Wayland, the
 # request was handed to the shell helper). Returns 1 when no X11 window
@@ -560,6 +747,7 @@ _focus_profile_class() {
   ensure_session_env
   # GNOME Wayland: MetaWindow pid does not match the container, so raise by class.
   if ! session_wants_x11 && [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+    open_profile_workspace "$class_name" || true
     ensure_window_focus_helper
     window_focus_helper_ready || return 0
     gdbus call --session \
@@ -793,11 +981,12 @@ raise_profile_window() {
   _focus_profile_class "$class_name" || true
 }
 
-# --- Per-profile dock entries (one icon each, shared right-click menu) ---
+# --- Per-profile dock entries (one icon each) ---
 # HARD RULES:
 #   • One .desktop + badge per profile; Chrome --class matches StartupWMClass
-#   • Left-click → activate that profile; right-click is the fleet menu
-#     (Profiles…, Pause all, Resume all, Close all — only when valid)
+#   • Left-click → activate that profile
+#   • Right-click Pause / Resume runs on that profile only
+#     (Profiles…, Resume all, Close all — only when valid)
 #   • Never invent a partial hicolor/index.theme
 #   • Icons live under ~/.local/share/docked-browser/icons/ (not hicolor)
 #   • Do not swap Icon= when a profile pauses (GNOME caches window icons)
@@ -860,7 +1049,10 @@ prune_stale_profile_desktops() {
 }
 
 write_profile_desktop() {
-  local title="Docked · ${PROFILE_NAME}"
+  local title="Docked · ${PROFILE_NAME}" tmp
+  # Replace in one rename. Truncating the live .desktop makes Plank
+  # save the pin again with an empty Launcher, and the icon disappears.
+  tmp="$(mktemp "${DESKTOP_DIR}/.docked-browser-${PROFILE_NAME}.XXXXXX")"
   {
     cat <<EOF
 [Desktop Entry]
@@ -879,24 +1071,32 @@ NoDisplay=true
 Actions=$actions_csv
 EOF
     printf '%s' "${action_sections[@]}"
-  } > "$DESKTOP_FILE"
-  touch "$DESKTOP_FILE"
+  } > "$tmp"
+  chmod 644 "$tmp"
+  mv -f "$tmp" "$DESKTOP_FILE"
 }
 
 # Pin a profile on the live Plank dock only while its container state is
 # running. Paused, stopped, and missing containers lose their .dockitem.
 # Other launchers (files, Chrome, terminal, …) stay put.
 # A second refresh must not add a second .dockitem for the same launcher.
+# Plank (pinned-only off) turns a deleted pin into a transient icon while the
+# Chrome window is still mapped. Pause does not close that window, so after
+# the file sync we mark those windows skip-taskbar and drop only this app's
+# leftover Plank items. Running profiles get the taskbar hint cleared so the
+# pin comes back.
 sync_plank_launchers() {
   command -v plank >/dev/null 2>&1 || return 0
   local base="${XDG_CONFIG_HOME:-$HOME/.config}/plank"
   [[ -d "$base" ]] || return 0
   python3 - "$DESKTOP_DIR" "$base" <<'PY'
 import ast
+import ctypes
 import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 desktop_dir = Path(sys.argv[1])
@@ -967,8 +1167,17 @@ def desktop_for_uri(uri: str) -> Path | None:
     return path
 
 
+DOCKER_OK = False
+
+
+def docker_profile_state_ok() -> bool:
+    return DOCKER_OK
+
+
 def running_profile_names() -> set[str]:
     """Profiles whose chrome-* container State.Status is running (not paused)."""
+    global DOCKER_OK
+    DOCKER_OK = False
     try:
         ids = subprocess.check_output(
             ["docker", "ps", "-aq", "--filter", "name=chrome-"],
@@ -978,6 +1187,7 @@ def running_profile_names() -> set[str]:
     except (OSError, subprocess.CalledProcessError):
         return set()
     if not ids:
+        DOCKER_OK = True
         return set()
     try:
         raw = subprocess.check_output(
@@ -987,6 +1197,7 @@ def running_profile_names() -> set[str]:
         )
     except (OSError, subprocess.CalledProcessError):
         return set()
+    DOCKER_OK = True
     running: set[str] = set()
     for line in raw.splitlines():
         cname, sep, status = line.strip().partition("\t")
@@ -1042,13 +1253,20 @@ def sync_dock(dock_dir: Path, running: set[str]) -> None:
     for dockitem in sorted(launchers.glob("*.dockitem")):
         uri = launcher_uri(dockitem)
         target = desktop_for_uri(uri)
-        if target is None:
+        file_profile = None
+        if dockitem.name.startswith(prefix) and dockitem.name.endswith(".dockitem"):
+            stem = dockitem.name[len(prefix) : -len(".dockitem")]
+            if name_re.fullmatch(stem):
+                file_profile = stem
+        if target is None and file_profile is None:
             # Not one of our profile launchers.
             continue
-        name = profile_name(target)
+        name = profile_name(target) if target is not None else file_profile
         if name is None:
             continue
-        if name not in desired or desired[name] != uri or not target.is_file():
+        # An empty Launcher still occupies docked-browser-<name>.dockitem.
+        # Plank then has nothing to draw, and a later sync must not leave it.
+        if name not in desired or desired.get(name) != uri or target is None or not target.is_file():
             if dockitem.name.startswith(prefix):
                 dockitem.unlink(missing_ok=True)
             continue
@@ -1069,10 +1287,10 @@ def sync_dock(dock_dir: Path, running: set[str]) -> None:
         if name in claimed:
             continue
         path = launchers / f"{prefix}{name}.dockitem"
-        if path.exists():
-            # Filename is ours but its launcher is something else. Leave it.
-            continue
-        write_dockitem(path, uri)
+        if path.exists() and launcher_uri(path) != uri:
+            path.unlink(missing_ok=True)
+        if not path.exists():
+            write_dockitem(path, uri)
         claimed[name] = path
 
     shown = " ".join(sorted(desired)) if desired else "none"
@@ -1081,9 +1299,296 @@ def sync_dock(dock_dir: Path, running: set[str]) -> None:
         print(f"Plank {dock_dir.name} hidden: {' '.join(hidden)}")
 
 
+def profile_desktop_uris() -> dict[str, str]:
+    """profile → file:// URI of its .desktop, for names we ship."""
+    out: dict[str, str] = {}
+    if not desktop_dir.is_dir():
+        return out
+    for desktop in desktop_dir.glob("docked-browser-*.desktop"):
+        name = profile_name(desktop)
+        if name is None:
+            continue
+        try:
+            out[name] = desktop.resolve().as_uri()
+        except OSError:
+            continue
+    return out
+
+
+def _x_open():
+    display = os.environ.get("DISPLAY", "")
+    if not display:
+        return None
+    try:
+        x11 = ctypes.CDLL("libX11.so.6")
+    except OSError:
+        return None
+    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    x11.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+    x11.XDefaultRootWindow.restype = ctypes.c_ulong
+    x11.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
+    x11.XInternAtom.restype = ctypes.c_ulong
+    x11.XFree.argtypes = [ctypes.c_void_p]
+    x11.XFlush.argtypes = [ctypes.c_void_p]
+    x11.XSendEvent.argtypes = [
+        ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_long, ctypes.c_void_p,
+    ]
+    x11.XSendEvent.restype = ctypes.c_int
+    x11.XGetWindowProperty.argtypes = [
+        ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong,
+        ctypes.c_long, ctypes.c_long, ctypes.c_int, ctypes.c_ulong,
+        ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_ulong),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    x11.XGetWindowProperty.restype = ctypes.c_int
+    dpy = x11.XOpenDisplay(display.encode())
+    if not dpy:
+        return None
+    return x11, dpy
+
+
+def _x_prop(x11, dpy, win: int, name: bytes) -> tuple[int, bytes]:
+    atom = x11.XInternAtom(dpy, name, False)
+    actual_type = ctypes.c_ulong()
+    actual_format = ctypes.c_int()
+    nitems = ctypes.c_ulong()
+    leftover = ctypes.c_ulong()
+    data = ctypes.c_void_p()
+    status = x11.XGetWindowProperty(
+        dpy, win, atom, 0, 1024, False, 0,
+        ctypes.byref(actual_type), ctypes.byref(actual_format),
+        ctypes.byref(nitems), ctypes.byref(leftover), ctypes.byref(data),
+    )
+    if status != 0 or not data.value or nitems.value <= 0:
+        return actual_format.value, b""
+    width = ctypes.sizeof(ctypes.c_ulong) if actual_format.value == 32 else 1
+    blob = ctypes.string_at(data.value, nitems.value * width)
+    x11.XFree(data)
+    return actual_format.value, blob
+
+
+def _client_windows(x11, dpy) -> list[int]:
+    root = x11.XDefaultRootWindow(dpy)
+    fmt, blob = _x_prop(x11, dpy, root, b"_NET_CLIENT_LIST")
+    if fmt != 32 or not blob:
+        return []
+    count = len(blob) // ctypes.sizeof(ctypes.c_ulong)
+    arr = (ctypes.c_ulong * count).from_buffer_copy(blob)
+    return [int(wid) for wid in arr]
+
+
+def _wm_class_tokens(x11, dpy, wid: int) -> set[str]:
+    _fmt, blob = _x_prop(x11, dpy, wid, b"WM_CLASS")
+    if not blob:
+        return set()
+    return {part.decode("latin1", "replace") for part in blob.split(b"\x00") if part}
+
+
+def _state_atoms(x11, dpy, wid: int) -> list[int]:
+    fmt, blob = _x_prop(x11, dpy, wid, b"_NET_WM_STATE")
+    if fmt != 32 or not blob:
+        return []
+    count = len(blob) // ctypes.sizeof(ctypes.c_ulong)
+    arr = (ctypes.c_ulong * count).from_buffer_copy(blob)
+    return [int(item) for item in arr]
+
+
+def _set_skip_taskbar(x11, dpy, wid: int, want: bool) -> None:
+    skip = int(x11.XInternAtom(dpy, b"_NET_WM_STATE_SKIP_TASKBAR", False))
+    has = skip in _state_atoms(x11, dpy, wid)
+    if has == want:
+        return
+
+    class Data(ctypes.Union):
+        _fields_ = [("l", ctypes.c_long * 5)]
+
+    class XClientMessageEvent(ctypes.Structure):
+        _fields_ = [
+            ("type", ctypes.c_int),
+            ("serial", ctypes.c_ulong),
+            ("send_event", ctypes.c_int),
+            ("display", ctypes.c_void_p),
+            ("window", ctypes.c_ulong),
+            ("message_type", ctypes.c_ulong),
+            ("format", ctypes.c_int),
+            ("data", Data),
+        ]
+
+    root = x11.XDefaultRootWindow(dpy)
+    event = XClientMessageEvent()
+    event.type = 33  # ClientMessage
+    event.send_event = 1
+    event.display = dpy
+    event.window = wid
+    event.message_type = x11.XInternAtom(dpy, b"_NET_WM_STATE", False)
+    event.format = 32
+    event.data.l[0] = 1 if want else 0  # _NET_WM_STATE_ADD / REMOVE
+    event.data.l[1] = skip
+    event.data.l[2] = 0
+    event.data.l[3] = 1  # source: application
+    buf = ctypes.create_string_buffer(ctypes.sizeof(event))
+    ctypes.memmove(buf, ctypes.addressof(event), ctypes.sizeof(event))
+    mask = (1 << 20) | (1 << 19)  # SubstructureRedirect | SubstructureNotify
+    x11.XSendEvent(dpy, root, False, mask, buf)
+
+
+def sync_profile_taskbar(running: set[str]) -> None:
+    """Hide paused/stopped profile windows from docks that track open windows.
+
+    The window stays mapped. A running profile is allowed on the taskbar again
+    so its Plank pin can attach. Other applications are not touched.
+    """
+    opened = _x_open()
+    if opened is None:
+        return
+    x11, dpy = opened
+    try:
+        wanted: dict[str, bool] = {}
+        for name in profile_desktop_uris():
+            wanted[f"docked-browser-{name}"] = name in running
+        if not wanted:
+            return
+        changed = False
+        for wid in _client_windows(x11, dpy):
+            tokens = _wm_class_tokens(x11, dpy, wid)
+            matched = {wanted[token] for token in tokens if token in wanted}
+            if len(matched) != 1:
+                continue
+            show = next(iter(matched))
+            before = int(x11.XInternAtom(dpy, b"_NET_WM_STATE_SKIP_TASKBAR", False)) in _state_atoms(x11, dpy, wid)
+            _set_skip_taskbar(x11, dpy, wid, want=not show)
+            after = int(x11.XInternAtom(dpy, b"_NET_WM_STATE_SKIP_TASKBAR", False)) in _state_atoms(x11, dpy, wid)
+            if before != after or (not show) != before:
+                changed = True
+        if changed:
+            x11.XFlush(dpy)
+    finally:
+        x11.XCloseDisplay(dpy)
+
+
+def _busctl(path: str, method: str, sig: str = "", *args: str) -> str:
+    cmd = [
+        "busctl", "--user", "call", "net.launchpad.plank", path,
+        "net.launchpad.plank.Items", method,
+    ]
+    if sig:
+        cmd.append(sig)
+        cmd.extend(args)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return proc.stdout
+
+
+def _plank_uris(path: str, method: str) -> list[str]:
+    raw = _busctl(path, method)
+    return re.findall(r'"([^"]+)"', raw)
+
+
+def _pinned_only(dock_name: str) -> str | None:
+    schema = f"net.launchpad.plank.dock.settings:/net/launchpad/plank/docks/{dock_name}/"
+    try:
+        proc = subprocess.run(
+            ["gsettings", "get", schema, "pinned-only"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    value = proc.stdout.strip()
+    if value not in {"true", "false"}:
+        return None
+    return value
+
+
+def _set_pinned_only(dock_name: str, value: str) -> bool:
+    schema = f"net.launchpad.plank.dock.settings:/net/launchpad/plank/docks/{dock_name}/"
+    try:
+        proc = subprocess.run(
+            ["gsettings", "set", schema, "pinned-only", value],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0
+
+
+def drop_hidden_plank_items(dock_dirs: list[Path], running: set[str]) -> None:
+    """Remove leftover Plank icons for profiles that are not running.
+
+    Deleting a .dockitem while the window is mapped makes Plank keep a
+    transient icon. Skip-taskbar is already set, so rebuilding transients
+    does not put that profile back. The user's other launchers stay.
+    """
+    hidden_uris = {
+        uri for name, uri in profile_desktop_uris().items() if name not in running
+    }
+    if not hidden_uris:
+        return
+    for dock_dir in dock_dirs:
+        path = f"/net/launchpad/plank/{dock_dir.name}"
+        for uri in _plank_uris(path, "GetPersistentApplications"):
+            if uri not in hidden_uris:
+                continue
+            _busctl(path, "Remove", "s", uri)
+            print(f"Plank {dock_dir.name} unpinned {uri.rsplit('/', 1)[-1]}")
+        time.sleep(0.3)
+        leftover = [uri for uri in _plank_uris(path, "GetTransientApplications") if uri in hidden_uris]
+        if not leftover:
+            continue
+        previous = _pinned_only(dock_dir.name)
+        if previous != "false":
+            print(f"Plank {dock_dir.name} still showing: {' '.join(leftover)}")
+            continue
+        if not _set_pinned_only(dock_dir.name, "true"):
+            continue
+        try:
+            time.sleep(0.3)
+        finally:
+            if not _set_pinned_only(dock_dir.name, previous):
+                _set_pinned_only(dock_dir.name, previous)
+        time.sleep(0.3)
+        still = [uri for uri in _plank_uris(path, "GetTransientApplications") if uri in hidden_uris]
+        if still:
+            print(f"Plank {dock_dir.name} still showing: {' '.join(still)}")
+        else:
+            print(f"Plank {dock_dir.name} hid paused profiles")
+
+
+def ensure_plank_pins(dock_dirs: list[Path], running: set[str]) -> None:
+    """Ask Plank to show a running profile whose pin file it did not load."""
+    uris = profile_desktop_uris()
+    for dock_dir in dock_dirs:
+        path = f"/net/launchpad/plank/{dock_dir.name}"
+        have = set(_plank_uris(path, "GetPersistentApplications"))
+        for name in sorted(running):
+            uri = uris.get(name)
+            if not uri or uri in have:
+                continue
+            if _busctl(path, "Add", "s", uri):
+                print(f"Plank {dock_dir.name} pinned {name}")
+
+
 running = running_profile_names()
-for dock_dir in live_dock_dirs():
+docks = live_dock_dirs()
+for dock_dir in docks:
     sync_dock(dock_dir, running)
+if docker_profile_state_ok():
+    ensure_plank_pins(docks, running)
+# Docker lookup failed closed (empty) is indistinguishable here from "nothing
+# running". Window hints and Plank item removal run only after a successful
+# inspect, so a docker outage cannot blank every profile icon.
+if docker_profile_state_ok():
+    sync_profile_taskbar(running)
+    time.sleep(0.4)
+    drop_hidden_plank_items(docks, running)
 PY
 }
 
@@ -1106,41 +1611,51 @@ install_dock_entry() {
   prune_stale_profile_desktops
   fleet_flags
 
-  actions_csv="profiles;"
-  action_sections+=("
+  local profiles_section resume_all_section="" close_all_section=""
+  profiles_section="
 [Desktop Action profiles]
 Name=Profiles…
 Exec=$SCRIPT_PATH focus
-")
-
-  if ((HAS_RUNNING)); then
-    actions_csv+="pause-all;"
-    action_sections+=("
-[Desktop Action pause-all]
-Name=Pause all
-Exec=$SCRIPT_PATH pause-all
-")
-  fi
+"
   if ((HAS_PAUSED)); then
-    actions_csv+="resume-all;"
-    action_sections+=("
+    resume_all_section="
 [Desktop Action resume-all]
 Name=Resume all
 Exec=$SCRIPT_PATH resume-all
-")
+"
   fi
   if ((HAS_RUNNING || HAS_PAUSED)); then
-    actions_csv+="close-all;"
-    action_sections+=("
+    close_all_section="
 [Desktop Action close-all]
 Name=Close all
 Exec=$SCRIPT_PATH stop-all
-")
+"
   fi
 
   while IFS= read -r name; do
     [[ "$name" =~ ^[a-zA-Z0-9_-]{1,64}$ ]] || continue
     set_profile "$name"
+    # Both stay on the menu. GNOME Shell 50 freezes Actions= from the first
+    # time it loads the .desktop, so swapping Pause for Resume when the
+    # container changes state never reaches this right-click menu.
+    actions_csv="pause;resume;profiles;"
+    action_sections=("
+[Desktop Action pause]
+Name=Pause
+Exec=$SCRIPT_PATH pause $PROFILE_NAME
+" "
+[Desktop Action resume]
+Name=Resume
+Exec=$SCRIPT_PATH resume $PROFILE_NAME
+" "$profiles_section")
+    if ((HAS_PAUSED)); then
+      actions_csv+="resume-all;"
+      action_sections+=("$resume_all_section")
+    fi
+    if ((HAS_RUNNING || HAS_PAUSED)); then
+      actions_csv+="close-all;"
+      action_sections+=("$close_all_section")
+    fi
     ensure_profile_gui_icon
     write_profile_desktop
     written+=("$PROFILE_NAME")
@@ -1169,6 +1684,55 @@ Exec=$SCRIPT_PATH stop-all
   else
     echo "Dock entries: none (no profiles yet)"
   fi
+
+  reload_gnome_shell_actions
+}
+
+# GNOME Shell keeps each running app's desktop actions until that .desktop
+# disappears from its app cache and the windows are matched again. Rewrite
+# Actions= alone does not change the dock menu. Drop these launchers once
+# per actions generation, then write them back with Pause and Resume.
+reload_gnome_shell_actions() {
+  [[ "${DOCKED_SKIP_GNOME_RELOAD:-}" == 1 ]] && return 0
+  local desktop="${XDG_CURRENT_DESKTOP:-}:${DESKTOP_SESSION:-}"
+  [[ "$desktop" == *[Gg][Nn][Oo][Mm][Ee]* ]] || return 0
+  local bus="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus"
+  [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" || -S "$bus" ]] || return 0
+  local gen="pause-resume-v1"
+  local stamp="${STATE_DIR}/gnome-shell-actions-gen"
+  [[ -f "$stamp" && "$(tr -d '[:space:]' < "$stamp")" == "$gen" ]] && return 0
+  compgen -G "${DESKTOP_DIR}/docked-browser-*.desktop" >/dev/null || return 0
+
+  echo "Reloading GNOME dock menus for Pause and Resume..."
+  if ! python3 - "$DESKTOP_DIR" <<'PY'
+import pathlib, sys
+desktop_dir = pathlib.Path(sys.argv[1])
+for path in desktop_dir.glob("docked-browser-*.desktop"):
+    text = path.read_text(encoding="utf-8")
+    lines = []
+    seen = False
+    for line in text.splitlines(True):
+        if line.startswith("Hidden="):
+            lines.append("Hidden=true\n")
+            seen = True
+        else:
+            lines.append(line)
+    if not seen:
+        text = "".join(lines).replace("[Desktop Entry]\n", "[Desktop Entry]\nHidden=true\n", 1)
+    else:
+        text = "".join(lines)
+    path.write_text(text, encoding="utf-8")
+PY
+  then
+    DOCKED_SKIP_GNOME_RELOAD=1 "$SCRIPT_PATH" refresh-dock || true
+    return 1
+  fi
+  # ShellAppCache waits 5s after the last applications-dir change, and each
+  # write resets that timer. Stay quiet after the last Hidden=true.
+  sleep 10
+  DOCKED_SKIP_GNOME_RELOAD=1 "$SCRIPT_PATH" refresh-dock
+  sleep 10
+  printf '%s\n' "$gen" > "$stamp"
 }
 
 # --- Chrome profile prefs (fonts) --------------------------------------------
@@ -1447,18 +2011,43 @@ cmd_activate() {
 }
 
 cmd_pause() {
+  local status
+  status="$(container_status)"
+  if [[ "$status" != "running" ]]; then
+    if [[ -n "$status" ]]; then
+      echo "Not running: $PROFILE_NAME ($status)"
+    else
+      echo "Not running: $PROFILE_NAME"
+    fi
+    return 0
+  fi
   echo "Pausing profile: $PROFILE_NAME (CPU ~0%, RAM kept)..."
+  spawn_wake_watcher
   docker pause "$CONTAINER_NAME"
   install_dock_entry
 }
 
 cmd_resume() {
-  echo "Resuming profile: $PROFILE_NAME..."
-  unpause_profile
-  remember_active
-  install_dock_entry
-  sleep 0.3
-  raise_profile_window
+  local status
+  status="$(container_status)"
+  if [[ "$status" == "paused" ]]; then
+    echo "Resuming profile: $PROFILE_NAME..."
+    unpause_profile
+    remember_active
+    install_dock_entry
+    sleep 0.3
+    raise_profile_window
+    return 0
+  fi
+  if [[ "$status" == "running" ]]; then
+    echo "Already running: $PROFILE_NAME"
+    remember_active
+    install_dock_entry
+    raise_profile_window
+    return 0
+  fi
+  echo "Starting profile: $PROFILE_NAME..."
+  exec "$SCRIPT_PATH" run "$PROFILE_NAME"
 }
 
 cmd_stop() {
@@ -1510,6 +2099,7 @@ each_chrome_profile() {
 }
 
 cmd_pause_all() {
+  spawn_wake_watcher
   local name status
   while IFS= read -r name; do
     [[ "$name" =~ ^[a-zA-Z0-9_-]{1,64}$ ]] || continue
@@ -1526,6 +2116,8 @@ cmd_pause_all() {
 
 cmd_resume_all() {
   local name status
+  # Resume every paused profile without switching the current workspace.
+  DOCKED_SKIP_WORKSPACE=1
   while IFS= read -r name; do
     [[ "$name" =~ ^[a-zA-Z0-9_-]{1,64}$ ]] || continue
     set_profile "$name"

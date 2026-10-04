@@ -11,7 +11,7 @@ Stack
 HTTP API
 --------
 GET  /              → HTML UI
-GET  /api/status    → {image_built, containers[], profiles[], icons{}, theme}
+GET  /api/status    → {image_built, containers[], profiles[], icons{}, theme, for_now}
 GET  /api/stats     → {containers:[{profile,cpu_pct,mem_used,mem_limit,mem_pct,state}]}
 GET  /api/prefs     → {theme, advanced}
 POST /api/prefs     → {theme?: light|dark|system, advanced?: bool}
@@ -38,8 +38,10 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from control import get_theme, prefs_payload, save_prefs, session_wants_x11
+from habit_suggest import panel_for_now
 from predict_sleep import ensure_daemon, mark_used, set_enabled as predict_set_enabled
 from predict_sleep import status_payload as predict_status
+from wake_paused import ensure_watcher
 
 # --- Constants ---------------------------------------------------------------
 GUI_DIR = Path(__file__).resolve().parent
@@ -216,11 +218,17 @@ def status_payload() -> dict:
     containers = docker_chrome_status()
     for row in containers:
         row["auto_paused"] = row["profile"] in auto_paused and row.get("paused", False)
+    resumed = {
+        row["profile"]
+        for row in containers
+        if row.get("running") and not row.get("paused")
+    }
     return {
         "image_built": image_built(),
         "containers": containers,
         "profiles": profiles,
         "icons": {name: icon_path(name).is_file() for name in profiles},
+        "for_now": panel_for_now(resumed),
         "theme": get_theme(),  # resolved light|dark for painting
         "theme_pref": prefs["theme"],
         "theme_resolved": prefs["theme_resolved"],
@@ -594,6 +602,7 @@ def main() -> None:
         print("Predict-sleep daemon: running (LinUCB per-profile auto-pause)")
     else:
         print("Predict-sleep daemon: already held by another process")
+    ensure_watcher()
 
     server = ThreadingHTTPServer((HOST, PORT), CockpitHandler)
     print(f"Docked Browser GUI → http://{HOST}:{PORT}")

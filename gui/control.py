@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -389,7 +390,15 @@ def open_focus_modal() -> None:
 
 
 def open_full_gui() -> None:
-    subprocess.Popen([str(START_GUI)], cwd=str(ROOT), env=desktop_env(), start_new_session=True)
+    env = desktop_env()
+    subprocess.Popen([str(START_GUI)], cwd=str(ROOT), env=env, start_new_session=True)
+    port = os.environ.get("DOCKED_BROWSER_PORT") or os.environ.get("COCKPIT_PORT") or "8787"
+    url = f"http://127.0.0.1:{port}/"
+    if shutil.which("xdg-open"):
+        cmd = ["xdg-open", url]
+    else:
+        cmd = ["gio", "open", url]
+    subprocess.Popen(cmd, cwd=str(ROOT), env=env, start_new_session=True)
 
 
 def status_json() -> str:

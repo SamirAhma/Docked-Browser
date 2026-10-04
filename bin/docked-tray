@@ -31,6 +31,7 @@ from control import (  # noqa: E402
     wayland_activation_token,
 )
 from predict_sleep import ensure_daemon  # noqa: E402
+from wake_paused import ensure_watcher  # noqa: E402
 
 APP_ID = "org.dockedbrowser.tray"
 
@@ -195,6 +196,7 @@ def main() -> int:
         )
 
     ensure_daemon()
+    ensure_watcher()
     Tray()
     Gtk.main()
     return 0

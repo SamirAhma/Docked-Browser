@@ -3,7 +3,8 @@
 
 Maps ambient-sleep StayAwake / AllowSleep onto Chrome profiles:
   KeepRunning  → leave the container running
-  Pause        → ``docker pause`` when the profile looks unused
+  Pause        → ``bin/docked-browser pause <profile>`` (``docker pause`` plus
+  the same Plank/Dash sync as a manual pause) when the profile looks unused
 
 Activity is the focused Chrome window (its PID belongs to that container),
 plus host keyboard/mouse idle. Container CPU is not a use signal — a page
@@ -12,13 +13,16 @@ you are reading often sits near 0% while background tabs sit higher.
 Tick order (same as ambient-sleep; do not reorder):
   1. Sample fused idle for each *running* profile
   2. Credit the previous decision (delayed reward + wall clock)
-  3. Circuit breaker (≥10 min idle) → force pause, skip bandit
+  3. Circuit breaker (≥5 min idle) → force pause, skip bandit
   4. Build context → LinUCB select
   5. Pause only if AllowSleep and idle ≥ 60s; otherwise keep running
   6. Stash decision for next poll
 
 Checkpoint: ``~/.local/share/docked-browser/linucb.json``
 Per-profile last-used: ``~/.local/share/docked-browser/predict-sleep-state.json``
+
+Weekday/hour suggestions live in ``gui/habit_suggest.py`` and run from this
+daemon. They do not change LinUCB or the pause-warning click.
 """
 
 from __future__ import annotations
@@ -837,6 +841,12 @@ def mark_used(profile: str) -> None:
     cutoff = now - FORCED_WAKE_WINDOW_S
     st.recent_forced_wakes = [t for t in st.recent_forced_wakes if t >= cutoff]
     store.save()
+    try:
+        from habit_suggest import log_use
+
+        log_use(profile)
+    except Exception as exc:  # noqa: BLE001 — habit logging must not break pause state
+        _log(f"habit log failed: {exc}")
 
 
 def _ctx_from_pending(pending: dict[str, Any], profile: str) -> Context:
@@ -1093,6 +1103,12 @@ class PredictSleepDaemon:
             except OSError:
                 pass
         while not self._stop.wait(POLL_INTERVAL_S):
+            try:
+                from habit_suggest import daemon_tick
+
+                daemon_tick()
+            except Exception as exc:  # noqa: BLE001 — suggestion must not stop auto-pause
+                _log(f"habit error: {exc}")
             try:
                 tick(bandit)
             except Exception as exc:  # noqa: BLE001 — keep daemon alive

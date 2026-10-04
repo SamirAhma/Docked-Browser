@@ -439,6 +439,22 @@
       font-size: 1.02rem;
     }
 
+    .row.is-now {
+      padding-top: 1.15rem;
+      padding-bottom: 1.15rem;
+    }
+
+    .row.is-now .name {
+      font-size: 1.35rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+    }
+
+    .row.is-now .actions button {
+      padding: 0.62rem 1.1rem;
+      font-size: 0.92rem;
+    }
+
     .sub {
       margin: 0.2rem 0 0;
       display: flex;
@@ -644,7 +660,7 @@
           class="adv-toggle"
           :class="{ 'is-on': advanced }"
           :aria-pressed="advanced.toString()"
-          title="CPU/RAM, fleet actions, and logs"
+          title="Fleet actions, maintenance, and logs"
           @click="setAdvanced(!advanced)"
         >
           <span class="adv-switch" aria-hidden="true"><span class="adv-knob"></span></span>
@@ -689,8 +705,76 @@
         @change="onIconPicked($event)"
       />
 
-      <template x-if="!liveRows.length && !savedRows.length">
+      <template x-if="!liveRows.length && !savedRows.length && !forNowRow">
         <p class="empty">Type a name above and press Open.</p>
+      </template>
+
+      <template x-if="forNowRow">
+        <div class="for-now" :data-profile="forNowRow.profile">
+          <p class="group-label">For now</p>
+          <div
+            class="row is-now"
+            :class="{ 'is-live': forNowRow.paused || forNowRow.running, 'is-sel': profile === forNowRow.profile }"
+            @click="profile = forNowRow.profile"
+          >
+            <div class="icon-wrap" @click.stop>
+              <button
+                type="button"
+                class="icon-btn"
+                title="Dock icon"
+                @click="pickIcon(forNowRow.profile)"
+                :disabled="busy"
+              >
+                <template x-if="icons[forNowRow.profile]">
+                  <img class="icon" :src="iconUrlFor(forNowRow.profile)" :alt="forNowRow.profile" />
+                </template>
+                <template x-if="!icons[forNowRow.profile]">
+                  <span class="icon ph" x-text="initials(forNowRow.profile)"></span>
+                </template>
+              </button>
+              <button
+                type="button"
+                class="icon-clear"
+                :class="{ 'is-on': !!icons[forNowRow.profile] }"
+                title="Reset icon"
+                @click="clearIconFor(forNowRow.profile)"
+                :disabled="busy"
+              >×</button>
+            </div>
+
+            <div class="meta">
+              <p class="name" x-text="forNowRow.profile"></p>
+              <p class="sub">
+                <span class="pill">
+                  <span class="dot" :class="forNowRow.paused ? 'warn' : ''"></span>
+                  <span x-text="forNowRow.paused ? (forNowRow.auto_paused ? 'Auto-sleep' : 'Paused') : 'Not open'"></span>
+                </span>
+                <span class="res" x-show="statLine(forNowRow.profile)" x-text="statLine(forNowRow.profile)"></span>
+              </p>
+            </div>
+
+            <div class="actions" @click.stop>
+              <template x-if="forNowRow.paused">
+                <button
+                  type="button"
+                  class="btn-resume"
+                  @click="run('activate', forNowRow.profile)"
+                  :disabled="busy"
+                  :title="'Resume “' + forNowRow.profile + '”'"
+                >Resume</button>
+              </template>
+              <template x-if="!forNowRow.paused">
+                <button
+                  type="button"
+                  class="btn-primary"
+                  @click="run('activate', forNowRow.profile)"
+                  :disabled="busy || !imageBuilt"
+                  :title="'Open “' + forNowRow.profile + '”'"
+                >Open</button>
+              </template>
+            </div>
+          </div>
+        </div>
       </template>
 
       <template x-if="liveRows.length">
@@ -734,7 +818,7 @@
                     <span class="dot" :class="row.paused ? 'warn' : 'on'"></span>
                     <span x-text="row.paused ? (row.auto_paused ? 'Auto-sleep' : 'Paused') : 'Open'"></span>
                   </span>
-                  <span class="res" x-show="advanced && statLine(row.profile)" x-text="statLine(row.profile)"></span>
+                  <span class="res" x-show="statLine(row.profile)" x-text="statLine(row.profile)"></span>
                 </p>
               </div>
 
@@ -879,7 +963,7 @@
           </div>
           <div>
             <dt>Advanced</dt>
-            <dd>Toggle in the header for CPU/RAM, pause/resume/close all, maintenance tools, and the activity log.</dd>
+            <dd>Toggle in the header for pause/resume/close all, maintenance tools, and the activity log. CPU and RAM stay on each open browser.</dd>
           </div>
         </dl>
         <div class="help-grid">
@@ -966,6 +1050,7 @@
         profile: "",
         profiles: [],
         containers: [],
+        forNow: "",
         stats: [],
         icons: {},
         iconTick: 0,
@@ -1046,6 +1131,20 @@
             .sort((a, b) => a.profile.localeCompare(b.profile));
         },
 
+        get forNowRow() {
+          const name = this.forNow;
+          if (!name) return null;
+          const row = this.browserRows.find((r) => r.profile === name) || null;
+          if (row && row.running) return null;
+          if (row) return row;
+          return {
+            profile: name,
+            paused: false,
+            running: false,
+            auto_paused: false,
+          };
+        },
+
         get canPauseAll() {
           return this.liveRows.some((r) => r.running);
         },
@@ -1115,10 +1214,6 @@
           if (this.statsTimer) {
             clearInterval(this.statsTimer);
             this.statsTimer = null;
-          }
-          if (!this.advanced) {
-            this.stats = [];
-            return;
           }
           this.refreshStats();
           this.statsTimer = setInterval(() => this.refreshStats(), 10000);
@@ -1203,7 +1298,6 @@
         },
 
         async refreshStats() {
-          if (!this.advanced) return;
           try {
             const res = await fetch("/api/stats");
             if (!res.ok) return;
@@ -1221,6 +1315,7 @@
           this.imageBuilt = !!data.image_built;
           this.containers = data.containers || [];
           this.profiles = data.profiles || [];
+          this.forNow = typeof data.for_now === "string" ? data.for_now : "";
           this.icons = data.icons || {};
           this.iconTick = Date.now();
           if (data.predict_sleep) {
