@@ -15,6 +15,7 @@ GUI_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, GUI_DIR)
 
 from predict_sleep import POLL_INTERVAL_S, ensure_daemon  # noqa: E402
+from wake_paused import ensure_watcher  # noqa: E402
 
 
 def main() -> int:
@@ -28,8 +29,10 @@ def main() -> int:
 
     if not ensure_daemon():
         print("predict-sleep already running elsewhere", flush=True)
+        ensure_watcher()
         return 0
 
+    ensure_watcher()
     print(f"Docked Browser predict-sleep (poll={POLL_INTERVAL_S}s)", flush=True)
     stop = False
 

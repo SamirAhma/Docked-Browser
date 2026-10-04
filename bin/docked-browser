@@ -98,8 +98,8 @@ remember_active() {
   fi
 }
 
-# Cinnamon pings a window on click. A paused Chrome cannot answer, so the
-# shell shows "is not responding" unless this watcher resumes that profile.
+# GNOME Dash raises a mapped paused window without re-running Exec. The
+# wake-on-focus watcher resumes that profile when its class becomes focused.
 spawn_wake_watcher() {
   [[ -f "$GUI_DIR/wake_paused.py" ]] || return 0
   PYTHONPATH="$GUI_DIR${PYTHONPATH:+:$PYTHONPATH}" \

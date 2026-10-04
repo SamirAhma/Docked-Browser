@@ -70,7 +70,7 @@ CLI:
 ./bin/docked-browser status           # JSON status
 ```
 
-**Dock (GNOME Dash):** one icon per profile (`Docked · name`). Left-click runs `activate` for that name. Right-click always lists **Pause** and **Resume** for that profile (GNOME Shell freezes `Actions=` from the first load, so the menu does not swap them by container state). Profiles…, Resume all, and Close all appear when they apply. Pin icons from the Dash if you want. A paused profile leaves the Dash until resume (`SetDashHidden` on the Focused Window helper; the running Shell loads that method only after the next login).
+**Dock (GNOME Dash):** one icon per profile (`Docked · name`). Left-click runs `activate` for that name when Exec runs. If the window is still mapped (including after pause), GNOME may only raise it — `gui/wake_paused.py` watches focus via the Focused Window helper and resumes a paused profile when its class becomes focused. Right-click always lists **Pause** and **Resume** for that profile (GNOME Shell freezes `Actions=` from the first load, so the menu does not swap them by container state). Profiles…, Resume all, and Close all appear when they apply. Pin icons from the Dash if you want. A paused profile leaves the Dash until resume when `SetDashHidden` is loaded (the running Shell loads that method only after the next login; until then the icon may stay visible and left-click still resumes via wake-on-focus).
 
 ## Workspaces (GNOME)
 
@@ -102,7 +102,7 @@ The app patches the [Focused Window](https://github.com/flexagoon/focused-window
 │   ├── server.py
 │   ├── predict_sleep.py         # per-profile LinUCB (ambient-sleep port)
 │   ├── habit_suggest.py         # weekday/hour profile suggestion
-│   ├── wake_paused.py           # leftover X11 helper (unsupported)
+│   ├── wake_paused.py           # Dash/focus wake for paused profiles (GNOME)
 │   ├── dock_icon.py             # per-profile GUI badges (web / modal)
 │   ├── brand_icons.py           # unified web/tray/modal brand glyphs
 │   ├── templates/

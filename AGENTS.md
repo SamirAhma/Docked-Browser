@@ -17,11 +17,11 @@ web UI / tray / focus-modal ──────────► bin/docked-browser
 
 - Keep stdlib `http.server` for the full UI (no Flask).
 - Lifecycle goes through `bin/docked-browser`. Never call `docker run` from `gui/server.py`.
-- **One Dash icon per profile** (`docked-browser-<name>`). Left-click activates that profile.
+- **One Dash icon per profile** (`docked-browser-<name>`). Left-click runs `activate` for that profile when Exec runs; when the Chrome window is still mapped (including across pause), GNOME may only raise it by `StartupWMClass` without re-running Exec. `gui/wake_paused.py` polls the Focused Window helper and runs `activate` when a paused profile’s class becomes focused, so a Dash left-click still resumes.
 - Right-click **Pause** and **Resume** both stay on every profile menu and target that profile. GNOME Shell 50 freezes `Actions=` from the first load, so the menu must not rely on swapping Pause for Resume by container state. Profiles…, Resume all, and Close all stay shared and appear only when valid.
-- Raise by class with `ActivateClass`. A paused profile leaves the Dash via `SetDashHidden` (same helper). The user creates workspaces. `~/.config/docked-browser/workspaces.json` lists profile names under each workspace number they share (`"1"` is the first workspace). Names match exactly (case-sensitive). Several profiles may share one number. Select (`activate`) and resume, including the focus from `run`, open that workspace when the name is listed. A missing file, an empty file, or a name that is not listed only raises the window. If the number is past the workspaces that exist, the script prints that the workspace does not exist and still raises the window. `resume-all` does not switch workspaces. The app does not create workspaces and does not change Mutter settings. `ActivateClass`, `SetDashHidden`, and `OpenWorkspace` are patched into the installed Focused Window helper (`focused-window-dbus@flexagoon.com`). The running Shell does not load a new method until the next login; until then raise still works when `ActivateClass` is already loaded, Dash hide and workspace switch stay no-ops.
+- Raise by class with `ActivateClass`. A paused profile is hidden from the Dash via `SetDashHidden` when that method is loaded; until the next login after the patch, hide is a no-op and the icon may stay clickable — wake-on-focus still resumes. The user creates workspaces. `~/.config/docked-browser/workspaces.json` lists profile names under each workspace number they share (`"1"` is the first workspace). Names match exactly (case-sensitive). Several profiles may share one number. Select (`activate`) and resume, including the focus from `run`, open that workspace when the name is listed. A missing file, an empty file, or a name that is not listed only raises the window. If the number is past the workspaces that exist, the script prints that the workspace does not exist and still raises the window. `resume-all` does not switch workspaces. The app does not create workspaces and does not change Mutter settings. `ActivateClass`, `SetDashHidden`, and `OpenWorkspace` are patched into the installed Focused Window helper (`focused-window-dbus@flexagoon.com`). The running Shell does not load a new method until the next login; until then raise still works when `ActivateClass` is already loaded, Dash hide and workspace switch stay no-ops.
 - The tree `gnome/docked-browser-focus@bukit` is unused. Live focus / Dash hide / workspace switch go through the patched Flexagoon helper above.
-- Plank / Cinnamon / X11 helpers (`sync_plank_launchers`, `gui/wake_paused.py`, ozone-x11 launch) are **untested leftovers**. Do not expand them or claim support.
+- Plank / Cinnamon / X11 helpers (`sync_plank_launchers`, ozone-x11 launch, X11 focus fallback in `wake_paused.py`) are **untested leftovers**. Do not expand them or claim support.
 
 ## Naming
 
@@ -42,10 +42,10 @@ web UI / tray / focus-modal ──────────► bin/docked-browser
 2. **Do not** put absolute icons under `hicolor` or invent `hicolor/index.theme`.
 3. **No host NVIDIA `.so` bind-mounts** into the container.
 4. **Pause does not free RAM.**
-5. The focus modal lists every known profile (running, paused, stopped). A click runs `activate` for that exact name. Profiles… opens that picker. A profile’s dock click also runs `activate`.
+5. The focus modal lists every known profile (running, paused, stopped). A click runs `activate` for that exact name. Profiles… opens that picker. A profile’s dock click runs `activate` when Exec runs; wake-on-focus covers Dash raises that skip Exec.
 6. Dock right-click `Actions=` are rewritten when fleet state changes. Pause and Resume always stay listed for that profile. Profiles…, Resume all, and Close all appear only when valid.
 7. Each profile keeps its own Dash icon. Do not merge windows back onto one shared `docked-browser` class.
-8. A **paused** profile leaves the Dash until resume (`SetDashHidden`). The window stays on pause; do not dim or swap its icon.
+8. A **paused** profile leaves the Dash until resume when `SetDashHidden` is loaded. The window stays on pause; do not dim or swap its icon. Wake-on-focus resumes if the icon is still visible and raised.
 9. **Do not** claim Plank, Cinnamon, or X11 support. Supported target is Ubuntu 26.04 GNOME Wayland only.
 
 ## CLI

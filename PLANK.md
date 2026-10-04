@@ -25,7 +25,7 @@ The filename is `docked-browser-<profile>.dockitem`. The `Launcher=` value is th
 
 A pin exists only when `docker inspect` says `chrome-<profile>` is **running**. Paused, stopped, and missing containers have no dockitem. The Chrome window stays mapped across pause. `install_dock_entry` still calls `sync_plank_launchers` from lifecycle commands.
 
-Plank with `pinned-only` false can turn a removed pin into a running-window icon while that window is mapped. The leftover code then uses skip-taskbar and Plank D-Bus item removal. `gui/wake_paused.py` was for Cinnamon click-to-wake on a paused window. None of this is a supported target.
+Plank with `pinned-only` false can turn a removed pin into a running-window icon while that window is mapped. The leftover code then uses skip-taskbar and Plank D-Bus item removal. None of this is a supported target. (GNOME wake-on-focus lives in `gui/wake_paused.py` and is separate.)
 
 ## Window class
 
@@ -37,6 +37,10 @@ These strings are the same value, `docked-browser-<profile>`:
 
 Left-click `Exec` is `bin/docked-browser activate <profile>`.
 
+When the Chrome window is still mapped, GNOME Dash often activates the existing window by `StartupWMClass` and does **not** re-run Exec. That includes `docker pause` (the window stays mapped). So a left-click on a paused profile’s Dash icon may only raise the frozen window.
+
+`gui/wake_paused.py` closes that gap on the supported GNOME Wayland path: it polls `FocusedWindow.Get`, and when the focused class is `docked-browser-<profile>` and `chrome-<profile>` is paused, it runs `activate` for that name. Wake is edge-triggered on focus enter (debounce 2s) so a pause while that window is already focused does not immediately fight resume. The watcher is started from the GUI server, tray, predict-sleep daemon, and on `pause` / `pause-all`.
+
 Right-click `Actions=` always lists **Pause** and **Resume** for that profile (GNOME Shell freezes `Actions=` from the first load, so the menu must not swap them by state). Profiles…, Resume all, and Close all are shared fleet items and appear only when valid. `install_dock_entry` rewrites every profile `.desktop` when fleet state changes, then runs `sync_paused_dash` (and still calls the untested Plank sync).
 
 `--user-data-dir` is set as well. The named data dir plus `--class` / `--name` keeps each profile on its own launcher.
@@ -47,11 +51,11 @@ Right-click `Actions=` always lists **Pause** and **Resume** for that profile (G
 
 Raise the window by class `docked-browser-<profile>` (`_focus_profile_class`). The container PID is not the window id (`MetaWindow.get_pid()` does not match the container).
 
-D-Bus `org.gnome.shell.extensions.FocusedWindow.ActivateClass` on the Focused Window helper (`focused-window-dbus@flexagoon.com`, patched in place). The running Shell loaded that JavaScript at login. A method added on disk is absent until the next login. The same helper also gets `SetDashHidden` (paused profiles leave the Dash) and `OpenWorkspace` (switch to a workspace the user already created). The unused tree `gnome/docked-browser-focus@bukit` is not on this path.
+D-Bus `org.gnome.shell.extensions.FocusedWindow.ActivateClass` on the Focused Window helper (`focused-window-dbus@flexagoon.com`, patched in place). The running Shell loaded that JavaScript at login. A method added on disk is absent until the next login. The same helper also gets `SetDashHidden` (paused profiles leave the Dash when loaded) and `OpenWorkspace` (switch to a workspace the user already created). `Get` (stock) feeds predict-sleep and wake-on-focus. The unused tree `gnome/docked-browser-focus@bukit` is not on this path.
 
 ## Untested: X11 / Cinnamon leftovers
 
-`session_wants_x11` and the ozone-x11 launch path still exist. They are **not** supported. Same for `gui/wake_paused.py` and `wmctrl` / `xdotool` raise. Do not document them as working targets.
+`session_wants_x11` and the ozone-x11 launch path still exist. They are **not** supported. Same for the xdotool/xprop focus fallback inside `gui/wake_paused.py` and `wmctrl` / `xdotool` raise. Do not document them as working targets.
 
 ## Predict sleep
 
