@@ -27,11 +27,12 @@ Same idea as Chrome’s built-in profiles (separate cookies/logins per name). Do
 - **Not a new kind of security** — it’s profile separation, not a VPN or VM
 - **Pause does not free RAM** — it only stops CPU
 - Dock icons are never dimmed or swapped on pause (GNOME would cache a dimmed window icon)
-- On **GNOME**, a paused profile leaves the Dash until resume (needs the Focused Window helper patch loaded at login)
-- On **Plank**, the pin is shown only while the container is running
+- A paused profile leaves the Dash until resume (needs the Focused Window helper patch loaded at login)
 - Profiles still share your machine, IP, and `~/Downloads`
 
-Target host: Linux + Docker (Ubuntu GNOME on Wayland, including NVIDIA; Cinnamon on X11 stays supported).
+**Supported host (tested):** Ubuntu **26.04** LTS, **GNOME** on **Wayland** (GNOME Shell 50), with Docker. NVIDIA is optional.
+
+Other desktops (Cinnamon, Plank, X11, other distros) are **not supported** and **not tested**. Some leftover code paths may still exist in the tree; do not treat them as a product promise.
 
 ## Quick start
 
@@ -69,10 +70,7 @@ CLI:
 ./bin/docked-browser status           # JSON status
 ```
 
-**Dock:** one icon per profile (`Docked · name`). Left-click runs `activate` for that name. Right-click always lists **Pause** and **Resume** for that profile (GNOME Shell freezes `Actions=` from the first load, so the menu does not swap them by container state). Profiles…, Resume all, and Close all appear when they apply.
-
-- **GNOME Dash:** pin icons from the Dash if you want. A paused profile leaves the Dash until resume (`SetDashHidden` on the Focused Window helper; the running Shell loads that method only after the next login).
-- **Plank (Cinnamon):** a pin exists only while `chrome-<name>` is running. Pause or stop removes the pin; the window stays mapped. A click on that paused window runs `activate` (via `gui/wake_paused.py`) so Cinnamon does not show “is not responding”.
+**Dock (GNOME Dash):** one icon per profile (`Docked · name`). Left-click runs `activate` for that name. Right-click always lists **Pause** and **Resume** for that profile (GNOME Shell freezes `Actions=` from the first load, so the menu does not swap them by container state). Profiles…, Resume all, and Close all appear when they apply. Pin icons from the Dash if you want. A paused profile leaves the Dash until resume (`SetDashHidden` on the Focused Window helper; the running Shell loads that method only after the next login).
 
 ## Workspaces (GNOME)
 
@@ -84,7 +82,7 @@ You create the workspaces yourself. The app does not create workspaces or change
 
 `activate`, `resume`, and `run` open that workspace when the profile is listed. `resume-all` does not switch. A missing file, an empty file, or a profile that is not listed only raises the window. If the number is past the workspaces that exist, the script prints that the workspace does not exist and still raises the window.
 
-On GNOME Wayland the app patches the [Focused Window](https://github.com/flexagoon/focused-window-dbus) helper (`focused-window-dbus@flexagoon.com`) for `ActivateClass`, `SetDashHidden`, and `OpenWorkspace`. The running Shell does not load new methods until the next login. Until then, select and resume only raise the window (and paused profiles may stay visible on the Dash).
+The app patches the [Focused Window](https://github.com/flexagoon/focused-window-dbus) helper (`focused-window-dbus@flexagoon.com`) for `ActivateClass`, `SetDashHidden`, and `OpenWorkspace`. The running Shell does not load new methods until the next login. Until then, select and resume only raise the window (and paused profiles may stay visible on the Dash).
 
 ## Layout
 
@@ -104,7 +102,7 @@ On GNOME Wayland the app patches the [Focused Window](https://github.com/flexago
 │   ├── server.py
 │   ├── predict_sleep.py         # per-profile LinUCB (ambient-sleep port)
 │   ├── habit_suggest.py         # weekday/hour profile suggestion
-│   ├── wake_paused.py           # X11: click paused window → activate
+│   ├── wake_paused.py           # leftover X11 helper (unsupported)
 │   ├── dock_icon.py             # per-profile GUI badges (web / modal)
 │   ├── brand_icons.py           # unified web/tray/modal brand glyphs
 │   ├── templates/
@@ -114,7 +112,7 @@ On GNOME Wayland the app patches the [Focused Window](https://github.com/flexago
 ├── LICENSE
 ├── README.md
 ├── AGENTS.md
-└── PLANK.md
+└── PLANK.md                     # raise / dock internals; Plank paths untested
 ```
 
 ## Data on disk (host)
@@ -127,7 +125,6 @@ On GNOME Wayland the app patches the [Focused Window](https://github.com/flexago
 | `…/docked-browser-<name>.png` | That profile’s dock icon and GUI badge |
 | `…/docked-browser-tray.png` / `-modal.png` | Tray / focus brand glyphs |
 | `~/.local/share/applications/docked-browser-<name>.desktop` | That profile’s dock entry |
-| `~/.config/plank/dock1/launchers/docked-browser-<name>.dockitem` | Plank pin (only while running) |
 | `~/.config/docked-browser/workspaces.json` | Profiles listed under each GNOME workspace number |
 | `~/.local/share/docked-browser/prefs.json` | Shared UI prefs (theme, advanced) |
 | `~/.local/share/docked-browser/linucb.json` | Predict-sleep LinUCB checkpoint |
@@ -152,15 +149,16 @@ Naming:
 
 ## Dependencies
 
+- Ubuntu 26.04 LTS + GNOME on Wayland (tested)
 - Docker
 - Python 3 + Pillow
 - Optional for modal/tray: GTK 3 + Ayatana AppIndicator
 - Optional: NVIDIA Container Toolkit
-- GNOME Wayland raise / Dash hide / workspace switch: Focused Window Shell extension (`focused-window-dbus@flexagoon.com`), patched in place by `bin/docked-browser`
+- Focused Window Shell extension (`focused-window-dbus@flexagoon.com`), patched in place by `bin/docked-browser` for raise / Dash hide / workspace switch
 
 ## Docs for contributors / AIs
 
-See **[AGENTS.md](./AGENTS.md)**. Plank and the X11 session: **[PLANK.md](./PLANK.md)**.
+See **[AGENTS.md](./AGENTS.md)**. Dock / raise internals: **[PLANK.md](./PLANK.md)** (filename is historical; Plank is not a supported target).
 
 ## License
 

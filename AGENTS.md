@@ -2,22 +2,26 @@
 
 Instructions for AI assistants (and humans) editing this repo.
 
-Plank pins, skip-taskbar, window class, and the X11 versus Wayland launch and raise path are in **[PLANK.md](./PLANK.md)**. Read that before changing the dock or how Chrome attaches to the session. Predict-sleep timings in that file follow the constants in `gui/predict_sleep.py`.
+**Supported / tested host:** Ubuntu **26.04** LTS, **GNOME on Wayland** (GNOME Shell 50), with Docker. NVIDIA optional.
+
+**Not supported / not tested:** Plank, Cinnamon, X11 sessions, Ubuntu on Xorg, other distros. Leftover code for those paths may still be in the tree — do not document or sell them as supported. Do not tell the user to switch to Ubuntu on Xorg (Shell 50 black-screens).
+
+Dock / raise internals (including untested Plank leftovers) are in **[PLANK.md](./PLANK.md)**. Read that before changing how Chrome attaches to the session. Predict-sleep timings in that file follow the constants in `gui/predict_sleep.py`.
 
 ## Architecture
 
 ```
-profile dock icon (Plank on Cinnamon, Dash on GNOME) ──click──► bin/docked-browser activate <name>
+profile Dash icon ──click──► bin/docked-browser activate <name>
 web UI / tray / focus-modal ──────────► bin/docked-browser ──► docker Chrome
 ```
 
 - Keep stdlib `http.server` for the full UI (no Flask).
 - Lifecycle goes through `bin/docked-browser`. Never call `docker run` from `gui/server.py`.
-- **One dock icon per profile** (`docked-browser-<name>`). Left-click activates that profile.
+- **One Dash icon per profile** (`docked-browser-<name>`). Left-click activates that profile.
 - Right-click **Pause** and **Resume** both stay on every profile menu and target that profile. GNOME Shell 50 freezes `Actions=` from the first load, so the menu must not rely on swapping Pause for Resume by container state. Profiles…, Resume all, and Close all stay shared and appear only when valid.
-- **Plank** (Cinnamon): one `.dockitem` per profile in `~/.config/plank/dock1/launchers/` (or another enabled `dockN`), only while `chrome-<name>` is running. Hide it when paused or stopped; put it back when running. The window stays on pause. A click on that window runs `activate` for that profile (`gui/wake_paused.py`): Cinnamon pings on click, and a paused Chrome cannot answer, so the shell otherwise shows “is not responding”. Never delete other Plank launchers.
-- The live session is Ubuntu GNOME on Wayland. Raise by class with `ActivateClass`. A paused profile leaves the Dash via `SetDashHidden` (same helper). The user creates workspaces. `~/.config/docked-browser/workspaces.json` lists profile names under each workspace number they share (`"1"` is the first workspace). Names match exactly (case-sensitive). Several profiles may share one number. Select (`activate`) and resume, including the focus from `run`, open that workspace when the name is listed. A missing file, an empty file, or a name that is not listed only raises the window. If the number is past the workspaces that exist, the script prints that the workspace does not exist and still raises the window. `resume-all` does not switch workspaces. The app does not create workspaces and does not change Mutter settings. `ActivateClass`, `SetDashHidden`, and `OpenWorkspace` are patched into the installed Focused Window helper (`focused-window-dbus@flexagoon.com`). The running Shell does not load a new method until the next login; until then raise still works when `ActivateClass` is already loaded, Dash hide and workspace switch stay no-ops. Cinnamon on X11 stays supported: ignore a leftover `wayland-0` socket and launch with `DISPLAY`, `XAUTHORITY`, `/tmp/.X11-unix`, and `--ozone-platform=x11`, then raise with `wmctrl` or `xdotool`. Do not switch the user to Ubuntu on Xorg. Activate reopens a Wayland-started profile on the current display.
+- Raise by class with `ActivateClass`. A paused profile leaves the Dash via `SetDashHidden` (same helper). The user creates workspaces. `~/.config/docked-browser/workspaces.json` lists profile names under each workspace number they share (`"1"` is the first workspace). Names match exactly (case-sensitive). Several profiles may share one number. Select (`activate`) and resume, including the focus from `run`, open that workspace when the name is listed. A missing file, an empty file, or a name that is not listed only raises the window. If the number is past the workspaces that exist, the script prints that the workspace does not exist and still raises the window. `resume-all` does not switch workspaces. The app does not create workspaces and does not change Mutter settings. `ActivateClass`, `SetDashHidden`, and `OpenWorkspace` are patched into the installed Focused Window helper (`focused-window-dbus@flexagoon.com`). The running Shell does not load a new method until the next login; until then raise still works when `ActivateClass` is already loaded, Dash hide and workspace switch stay no-ops.
 - The tree `gnome/docked-browser-focus@bukit` is unused. Live focus / Dash hide / workspace switch go through the patched Flexagoon helper above.
+- Plank / Cinnamon / X11 helpers (`sync_plank_launchers`, `gui/wake_paused.py`, ozone-x11 launch) are **untested leftovers**. Do not expand them or claim support.
 
 ## Naming
 
@@ -40,8 +44,9 @@ web UI / tray / focus-modal ──────────► bin/docked-browser
 4. **Pause does not free RAM.**
 5. The focus modal lists every known profile (running, paused, stopped). A click runs `activate` for that exact name. Profiles… opens that picker. A profile’s dock click also runs `activate`.
 6. Dock right-click `Actions=` are rewritten when fleet state changes. Pause and Resume always stay listed for that profile. Profiles…, Resume all, and Close all appear only when valid.
-7. Each profile keeps its own Dash / Plank icon. Do not merge windows back onto one shared `docked-browser` class.
-8. On GNOME, a **paused** profile leaves the Dash until resume (`SetDashHidden`). On Plank, the icon is shown only while the container is running (hidden when paused or stopped). The window stays on pause; do not dim or swap its icon.
+7. Each profile keeps its own Dash icon. Do not merge windows back onto one shared `docked-browser` class.
+8. A **paused** profile leaves the Dash until resume (`SetDashHidden`). The window stays on pause; do not dim or swap its icon.
+9. **Do not** claim Plank, Cinnamon, or X11 support. Supported target is Ubuntu 26.04 GNOME Wayland only.
 
 ## CLI
 

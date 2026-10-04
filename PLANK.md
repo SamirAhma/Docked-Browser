@@ -1,12 +1,14 @@
-# Plank and the X11 session
+# Dock / raise internals
 
-Facts for humans and for LLMs changing Docked Browser’s dock or how Chrome attaches to the desktop. Behavior below is what `bin/docked-browser`, `gui/predict_sleep.py`, `gui/wake_paused.py`, and `bin/focus-modal` do. Broader repo rules stay in [AGENTS.md](./AGENTS.md).
+Facts for humans and for LLMs changing Docked Browser’s dock or how Chrome attaches to the desktop. Behavior below is what `bin/docked-browser`, `gui/predict_sleep.py`, and `bin/focus-modal` do. Broader repo rules stay in [AGENTS.md](./AGENTS.md).
 
-Live desktop: **Ubuntu GNOME on Wayland**. Cinnamon on X11 is still a supported path in `bin/docked-browser`. GNOME on Xorg (Ubuntu on Xorg) does not run on GNOME Shell 50 — black screen, then back to the login greeter. Do not switch the user to Ubuntu on Xorg.
+**Supported / tested:** Ubuntu **26.04** LTS, **GNOME on Wayland** (Shell 50). That is the product target.
 
-## Do not fork Plank
+**Not supported / not tested:** Plank, Cinnamon, X11, Ubuntu on Xorg. GNOME on Xorg black-screens on Shell 50 — do not switch the user there. Sections below that mention Plank or X11 describe leftover code only; do not expand or advertise them.
 
-Plank is a dependency. The interface is files it already watches:
+## Untested: Plank leftovers
+
+`sync_plank_launchers` still exists in `bin/docked-browser`. It is **not** a supported product surface. If you must touch it, the interface is files Plank already watches:
 
 `~/.config/plank/dock1/launchers/*.dockitem`
 
@@ -19,61 +21,37 @@ Launcher=file:///home/<user>/.local/share/applications/docked-browser-<profile>.
 
 The filename is `docked-browser-<profile>.dockitem`. The `Launcher=` value is the absolute `file://` URI of that profile’s `.desktop`.
 
-## One icon while the container is running
+### Plank pin lifecycle (untested)
 
-A pin exists only when `docker inspect` says `chrome-<profile>` is **running**. Paused, stopped, and missing containers have no dockitem. The Chrome window stays mapped across pause.
+A pin exists only when `docker inspect` says `chrome-<profile>` is **running**. Paused, stopped, and missing containers have no dockitem. The Chrome window stays mapped across pause. `install_dock_entry` still calls `sync_plank_launchers` from lifecycle commands.
 
-The same sync runs from `pause`, `resume`, `activate`, `run`, `stop`, `delete`, `pause-all`, `resume-all`, `stop-all`, and `refresh-dock` (each calls `install_dock_entry`). Other files in `launchers/` — the user’s Chrome, files, terminal — are left in place. Icon files stay as they are: no dimming, no `Icon=` swap.
-
-## Deleting the pin is not enough
-
-Plank with `pinned-only` false (`net.launchpad.plank.dock.settings` … `pinned-only`) turns a removed pin into a running-window icon while that window is mapped. Pause does not unmap the window, so the icon would come back.
-
-Inside `sync_plank_launchers`:
-
-1. `sync_dock` deletes `docked-browser-<profile>.dockitem` when that profile is not running, and writes it back when it is.
-2. `sync_profile_taskbar` / `_set_skip_taskbar` sends `_NET_WM_STATE_SKIP_TASKBAR` on windows whose `WM_CLASS` is `docked-browser-<profile>` for every profile that is not running. Running profiles get that hint removed so the pin can attach.
-3. After a short wait, `drop_hidden_plank_items` asks Plank (D-Bus `net.launchpad.plank.Items`) to drop leftover persistent and transient items for those hidden `.desktop` URIs. If `pinned-only` is false and a transient icon is still there, it sets `pinned-only` true, then sets it false again, so Plank rebuilds its running-window list without that profile.
-
-`ensure_plank_pins` adds a running profile whose pin file Plank did not load. Skip-taskbar and item removal run only after a successful `docker inspect`. A Docker outage must not wipe every profile icon.
-
-Clicking the still-visible paused window is handled separately. `pause` and `pause-all` start `gui/wake_paused.py` on X11. A click on a window whose class is `docked-browser-<profile>`, while `chrome-<profile>` is paused, runs `bin/docked-browser activate <profile>`. Cinnamon’s click ping would otherwise report the frozen Chrome as not responding.
+Plank with `pinned-only` false can turn a removed pin into a running-window icon while that window is mapped. The leftover code then uses skip-taskbar and Plank D-Bus item removal. `gui/wake_paused.py` was for Cinnamon click-to-wake on a paused window. None of this is a supported target.
 
 ## Window class
 
-These three strings are the same value, `docked-browser-<profile>`:
+These strings are the same value, `docked-browser-<profile>`:
 
 - Chrome `--class` and `--name` in `cmd_run`
 - `StartupWMClass=` in the profile `.desktop` (`write_profile_desktop`)
-- the Plank pin, which launches that `.desktop`
+- the Dash launcher for that `.desktop`
 
 Left-click `Exec` is `bin/docked-browser activate <profile>`.
 
-Right-click `Actions=` always lists **Pause** and **Resume** for that profile (GNOME Shell freezes `Actions=` from the first load, so the menu must not swap them by state). Profiles…, Resume all, and Close all are shared fleet items and appear only when valid. `install_dock_entry` rewrites every profile `.desktop` when fleet state changes, then runs `sync_paused_dash` and `sync_plank_launchers`.
+Right-click `Actions=` always lists **Pause** and **Resume** for that profile (GNOME Shell freezes `Actions=` from the first load, so the menu must not swap them by state). Profiles…, Resume all, and Close all are shared fleet items and appear only when valid. `install_dock_entry` rewrites every profile `.desktop` when fleet state changes, then runs `sync_paused_dash` (and still calls the untested Plank sync).
 
-`--user-data-dir` is set as well. An instance name of `google-chrome` makes Plank group the window onto the host Chrome icon. The named data dir plus `--class` / `--name` keeps this window on its own launcher.
+`--user-data-dir` is set as well. The named data dir plus `--class` / `--name` keeps each profile on its own launcher.
 
-## X11 / Cinnamon vs GNOME Wayland
+## GNOME Wayland (supported)
 
-`session_wants_x11` is true when `XDG_SESSION_TYPE` is `x11`, or when the desktop name contains Cinnamon, Xfce, or MATE.
+`cmd_run` launches with `WAYLAND_DISPLAY`, the Wayland socket mount, and `--ozone-platform=wayland`.
 
-On that path `ensure_session_env` clears `WAYLAND_DISPLAY`, defaults `DISPLAY` to `:0`, and sets `XAUTHORITY` from the existing runtime `gdm/Xauthority` or `~/.Xauthority` when those files exist. A leftover `wayland-0` socket in `XDG_RUNTIME_DIR` is a previous GNOME login. Pointing Chrome at it exits with “Failed to connect to Wayland display”.
+Raise the window by class `docked-browser-<profile>` (`_focus_profile_class`). The container PID is not the window id (`MetaWindow.get_pid()` does not match the container).
 
-`cmd_run` then launches with:
+D-Bus `org.gnome.shell.extensions.FocusedWindow.ActivateClass` on the Focused Window helper (`focused-window-dbus@flexagoon.com`, patched in place). The running Shell loaded that JavaScript at login. A method added on disk is absent until the next login. The same helper also gets `SetDashHidden` (paused profiles leave the Dash) and `OpenWorkspace` (switch to a workspace the user already created). The unused tree `gnome/docked-browser-focus@bukit` is not on this path.
 
-- `-e DISPLAY`
-- the `XAUTHORITY` file bind-mounted into the container
-- `-v /tmp/.X11-unix:/tmp/.X11-unix:ro`
-- `--ozone-platform=x11`
+## Untested: X11 / Cinnamon leftovers
 
-GNOME Wayland keeps its own path: `WAYLAND_DISPLAY`, the Wayland socket mount, and `--ozone-platform=wayland`.
-
-`activate` / `unpause_profile` check the container command (`container_display_mismatch`). A profile last started with `--ozone-platform=wayland` is opened again with `run` on the current display so unpause is not asked to map a Wayland window on Cinnamon.
-
-Raise the window by class `docked-browser-<profile>` (`_focus_profile_class`). The container PID is not the window id (on Wayland, `MetaWindow.get_pid()` does not match the container).
-
-- X11: `wmctrl -lx` then `wmctrl -i -a`; if that misses, `xdotool search --class` / `--classname`; if that misses, a `_NET_ACTIVE_WINDOW` ClientMessage. Match the class string either way.
-- GNOME Wayland: D-Bus `org.gnome.shell.extensions.FocusedWindow.ActivateClass` on the Focused Window helper (`focused-window-dbus@flexagoon.com`, patched in place). The running Shell loaded that JavaScript at login. A method added on disk is absent until the next login. The same helper also gets `SetDashHidden` (paused profiles leave the Dash) and `OpenWorkspace` (switch to a workspace the user already created). The unused tree `gnome/docked-browser-focus@bukit` is not on this path.
+`session_wants_x11` and the ozone-x11 launch path still exist. They are **not** supported. Same for `gui/wake_paused.py` and `wmctrl` / `xdotool` raise. Do not document them as working targets.
 
 ## Predict sleep
 
@@ -84,7 +62,7 @@ Raise the window by class `docked-browser-<profile>` (`_focus_profile_class`). T
 - LinUCB may choose Pause only after fused idle is at least **60s** (`MIN_AI_PAUSE_IDLE_MS`) and the window is not in use.
 - Circuit breaker: idle at least **5 minutes** (`IDLE_TRIP_MS`) and not in use forces pause and skips the bandit. The constant is what runs.
 - Either path shows a **20s** notification first (`WARNING_SECS`). “Keep awake”, a click on the notification, or focusing that profile cancels the pause and sets a 15-minute grace (`CANCEL_GRACE_SECS`). During the warning, focus is rechecked every 400ms.
-- The pause itself is `bin/docked-browser pause <profile>` (`pause_profile`). That command runs `docker pause` and then the same Plank sync as a manual pause. Open and Resume call `activate`, which also `mark_used` for that exact name.
+- The pause itself is `bin/docked-browser pause <profile>` (`pause_profile`). That command runs `docker pause` and refreshes dock entries. Open and Resume call `activate`, which also `mark_used` for that exact name.
 
 ## Focus modal
 
@@ -98,5 +76,6 @@ Details and the full hard-constraint list are in [AGENTS.md](./AGENTS.md). Short
 - Icons under `~/.local/share/icons/hicolor/`, or a hand-written `hicolor/index.theme`
 - Host NVIDIA `.so` bind-mounts into the Debian Chrome image
 - The claim that `docker pause` frees RAM or writes memory to disk (it freezes CPU; RAM stays)
-- One shared `StartupWMClass` or one shared Plank/Dash icon for every profile
+- One shared `StartupWMClass` or one shared Dash icon for every profile
+- Claims that Plank, Cinnamon, or X11 are supported
 - `docker run` from `gui/server.py` (the GUI calls `bin/docked-browser`)
