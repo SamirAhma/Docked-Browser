@@ -10,7 +10,7 @@ Same idea as Chrome’s built-in profiles (separate cookies/logins per name). Do
 
 ### Why use it
 - **One dock icon per profile** — left-click opens that profile; right-click Pause / Resume targets that profile only
-- **Pause** — freeze a window in RAM (almost no CPU) and come back later
+- **Pause** — freeze a window in RAM (almost no CPU) and come back later. After 2 hours paused, its RAM moves to swap
 - **Predict sleep** — unused profiles auto-pause (LinUCB, same formula as ambient-sleep)
 - **Usual profile** — after a few weeks, a notification can offer the profile you use at this weekday and hour. Click it to open that profile.
 - **Focus modal / tray / hotkey** — pick profiles without hunting windows
@@ -25,7 +25,7 @@ Same idea as Chrome’s built-in profiles (separate cookies/logins per name). Do
 ### Limits
 - Needs **Docker** (and a desktop session to show windows)
 - **Not a new kind of security** — it’s profile separation, not a VPN or VM
-- **Pause does not free RAM** — it only stops CPU
+- **Pause keeps RAM for the first 2 hours** — after that the profile is moved to swap (needs enough swap on disk), and resume is sluggish for a few seconds
 - Dock icons are never dimmed or swapped on pause (GNOME would cache a dimmed window icon)
 - A paused profile leaves the Dash until resume (needs the Focused Window helper patch loaded at login)
 - Profiles still share your machine, IP, and `~/Downloads`
@@ -60,6 +60,8 @@ CLI:
 ./bin/docked-browser activate work    # resume / focus / or run (what dock clicks use)
 ./bin/docked-browser pause work
 ./bin/docked-browser resume work
+./bin/docked-browser offload work     # push a paused profile's RAM to swap now
+./bin/docked-browser offload-all
 ./bin/docked-browser stop work
 ./bin/docked-browser delete work      # erase that profile’s data (permanent)
 ./bin/docked-browser pause-all
@@ -68,6 +70,7 @@ CLI:
 ./bin/docked-browser refresh-dock     # rebuild each profile’s dock icon
 ./bin/docked-browser focus            # profile picker (Profiles… on the dock menu)
 ./bin/docked-browser status           # JSON status
+./bin/docked-browser check-update     # check if a new Chrome update is available
 ```
 
 **Dock (GNOME Dash):** one icon per profile (`Docked · name`). Left-click runs `activate` for that name when Exec runs. If the window is still mapped (including after pause), GNOME may only raise it — `gui/wake_paused.py` watches focus via the Focused Window helper and resumes a paused profile when its class becomes focused. Right-click always lists **Pause** and **Resume** for that profile (GNOME Shell freezes `Actions=` from the first load, so the menu does not swap them by container state). Profiles…, Resume all, and Close all appear when they apply. Pin icons from the Dash if you want. A paused profile leaves the Dash until resume when `SetDashHidden` is loaded (the running Shell loads that method only after the next login; until then the icon may stay visible and left-click still resumes via wake-on-focus).
@@ -126,9 +129,10 @@ The app patches the [Focused Window](https://github.com/flexagoon/focused-window
 | `…/docked-browser-tray.png` / `-modal.png` | Tray / focus brand glyphs |
 | `~/.local/share/applications/docked-browser-<name>.desktop` | That profile’s dock entry |
 | `~/.config/docked-browser/workspaces.json` | Profiles listed under each GNOME workspace number |
-| `~/.local/share/docked-browser/prefs.json` | Shared UI prefs (theme, advanced) |
+| `~/.local/share/docked-browser/prefs.json` | Shared UI prefs (theme, advanced, minutes before swap offload) |
 | `~/.local/share/docked-browser/linucb.json` | Predict-sleep LinUCB checkpoint |
 | `~/.local/share/docked-browser/predict-sleep-state.json` | Per-profile idle / pending |
+| `~/.local/share/docked-browser/paused-at/` | When each profile was paused; `<name>.offloaded` once it went to swap |
 | `~/.local/share/docked-browser/habit.json` | Weekday and hour each profile was actually used |
 | `~/Downloads` | Shared downloads (read/write) |
 | `$HOME` (read-only in container) | Same host paths for file uploads (WhatsApp, etc.) |
@@ -141,7 +145,8 @@ Naming:
 
 ## Pause vs stop
 
-- **Pause** (`docker pause`): frozen in **RAM**, almost no CPU — does **not** free memory.
+- **Pause** (`docker pause`): frozen in **RAM**, almost no CPU — does **not** free memory at first.
+- **Swap offload**: a profile paused for **2 hours** has its memory pushed to swap (`docked-browser offload <name>`, run by the predict-sleep daemon). Resumed before 2h, it never left RAM. Resumed after, Chrome reads its pages back from disk, so it lags for a few seconds. Change the minutes under **Help & about → Move to disk** (`0` = never; saved as `offload_after_min` in `prefs.json`). The **Move all paused to disk** button there (`docked-browser offload-all`) does it now for every paused profile. Swap must be large enough to hold the paused profiles; check with `swapon --show`.
 - **Predict sleep**: unused running profiles are paused automatically (60s AI floor, 5 min hard breaker, 20s warning). Resume / Open always wake the **exact** named profile.
 - **Usual time**: the same daemon can notify you to open the profile you used in this weekday and hour in at least 3 of the last 4 weeks. Click runs `activate` for that profile. One offer per slot per Malaysia day; the notification stays up about five minutes. Missing it does not count as use. The profile panel shows a larger For now row for the current slot's winner when that profile is paused or not open; the profile remains in the list; a running profile is not featured.
 - **Stop / Close**: removes the container; profile data on disk is kept.

@@ -52,6 +52,16 @@ RUN useradd -ms /bin/bash chromeuser && \
 USER chromeuser
 ENV HOME=/home/chromeuser
 
+# Own layer so `build` can apt-upgrade Chrome without rebuilding fonts.
+# CHROME_REFRESH is referenced below; a new value busts only this layer.
+USER root
+ARG CHROME_REFRESH=0
+RUN echo "chrome-refresh ${CHROME_REFRESH}" \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends google-chrome-stable \
+    && rm -rf /var/lib/apt/lists/*
+USER chromeuser
+
 # Use tini as init process to prevent zombie processes
 ENTRYPOINT ["/usr/bin/tini", "--", "google-chrome"]
 CMD ["--no-first-run", "--no-default-browser-check"]

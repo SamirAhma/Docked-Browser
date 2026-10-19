@@ -10,7 +10,7 @@
 #
 # Repo layout: bin/ (this file) · gui/ (server + icons) · Dockerfile at root
 #
-# Commands: build | run | activate | pause | resume | stop | delete | refresh-dock | status | focus
+# Commands: build | run | activate | pause | resume | offload | stop | delete | refresh-dock | status | focus
 # Profile data: ~/.config/docker-chrome-profiles/<name>/
 # Container:    chrome-<name>
 # Dock class:   docked-browser-<name>  (one icon per profile; Pause/Resume is that profile)
@@ -34,6 +34,8 @@ DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 ICON_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/docked-browser/icons"
 STATE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/docked-browser"
 ACTIVE_FILE="$STATE_DIR/active-profile"
+# <name> holds the epoch of the last pause; <name>.offloaded marks a swap offload.
+PAUSED_AT_DIR="$STATE_DIR/paused-at"
 # One Dash icon per profile. Right-click Pause and Resume run on that profile.
 # Profiles…, Resume all, and Close all stay shared fleet items when valid.
 APP_CLASS=""
@@ -55,6 +57,8 @@ Commands:
   activate [name]       Resume / focus / or run
   pause [name]          docker pause  (frozen in RAM, almost no CPU)
   resume [name]         docker unpause
+  offload [name]        Push a paused profile's RAM to swap (predict-sleep does this after the set minutes)
+  offload-all           Push every paused chrome-* container's RAM to swap
   stop [name]           Remove the container (keeps bookmarks / cookies)
   delete [name]         Stop + erase that profile’s data and custom icon
   pause-all             Pause every running chrome-* container
@@ -63,6 +67,7 @@ Commands:
   refresh-dock [name]   Rebuild each profile’s Dash icon (+ GUI badge if name given)
   focus                 Open the focus modal (Profiles… on the dock menu)
   status                Print profile status as JSON
+  check-update          Check if a new Google Chrome version is available
 
 Examples:
   $0 build
@@ -160,6 +165,17 @@ container_status() {
 
 container_is_paused() {
   [[ "$(container_status)" == "paused" ]]
+}
+
+# Pause clock for predict-sleep's swap offload (see cmd_offload).
+mark_paused() {
+  mkdir -p "$PAUSED_AT_DIR"
+  date +%s > "$PAUSED_AT_DIR/$PROFILE_NAME"
+  rm -f -- "$PAUSED_AT_DIR/$PROFILE_NAME.offloaded"
+}
+
+clear_paused_mark() {
+  rm -f -- "$PAUSED_AT_DIR/$PROFILE_NAME" "$PAUSED_AT_DIR/$PROFILE_NAME.offloaded"
 }
 
 container_is_running() {
@@ -1786,9 +1802,18 @@ append_nvidia_gpu_args() {
 # --- Commands ----------------------------------------------------------------
 cmd_build() {
   echo "Building Docked Browser image (${IMAGE_NAME})..."
-  docker build -t "$IMAGE_NAME" "$ROOT_DIR"
+  # New timestamp invalidates only the Chrome apt layer (see Dockerfile CHROME_REFRESH).
+  docker build \
+    --build-arg "CHROME_REFRESH=$(date +%s)" \
+    -t "$IMAGE_NAME" \
+    "$ROOT_DIR"
   # Keep old tag working until people rebuild habits
   docker tag "$IMAGE_NAME" local-chrome-cockpit 2>/dev/null || true
+  echo "Chrome image rebuilt. Close and reopen a browser to use the new version."
+  PYTHONPATH="$GUI_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - <<'PY'
+from chrome_update import check_for_chrome_update
+check_for_chrome_update(force=True)
+PY
 }
 
 cmd_run() {
@@ -1806,6 +1831,7 @@ cmd_run() {
     docker rm -f "$CONTAINER_NAME" >/dev/null
   fi
 
+  clear_paused_mark
   install_dock_entry
   seed_chrome_fonts
   remember_active
@@ -1965,6 +1991,7 @@ unpause_profile() {
     echo "Could not resume $PROFILE_NAME"
     return 1
   fi
+  clear_paused_mark
   local i status code
   for i in 1 2 3 4 5 6; do
     sleep 0.5
@@ -2021,10 +2048,46 @@ cmd_pause() {
     fi
     return 0
   fi
-  echo "Pausing profile: $PROFILE_NAME (CPU ~0%, RAM kept)..."
+  echo "Pausing profile: $PROFILE_NAME (CPU ~0%, RAM kept until the swap offload)..."
   spawn_wake_watcher
   docker pause "$CONTAINER_NAME"
+  mark_paused
   install_dock_entry
+}
+
+# A paused profile keeps its RAM. After it has stayed paused for a while
+# (offload_after_min in prefs.json, 2h by default), predict-sleep runs this to
+# push that container's memory to swap. Resume then pages it back from disk,
+# so the window is sluggish for a few seconds.
+# memory.reclaim is root-only. Docker access already means root, so a
+# throwaway container from our own image writes it (no sudo prompt).
+cmd_offload() {
+  local status pid cg dir before after swapped
+  status="$(container_status)"
+  if [[ "$status" != "paused" ]]; then
+    echo "Not paused: $PROFILE_NAME${status:+ ($status)}"
+    return 0
+  fi
+  pid="$(docker inspect -f '{{.State.Pid}}' "$CONTAINER_NAME" 2>/dev/null || true)"
+  cg="$(sed -n 's/^0:://p' "/proc/$pid/cgroup" 2>/dev/null || true)"
+  dir="/sys/fs/cgroup$cg"
+  if [[ -z "$cg" || ! -f "$dir/memory.reclaim" ]]; then
+    echo "No memory cgroup for $PROFILE_NAME"
+    return 1
+  fi
+  before="$(cat "$dir/memory.current")"
+  echo "Offloading $PROFILE_NAME to swap ($((before / 1048576)) MiB in RAM)..."
+  # swappiness=200 reclaims Chrome's heap, not only page cache. The write
+  # fails with EAGAIN when the kernel frees less than asked (swap full);
+  # what it did free still counts.
+  docker run --rm --network none --user 0 --entrypoint sh \
+    --security-opt apparmor=unconfined -v "$dir:/target" "$IMAGE_NAME" \
+    -c 'echo "$1 swappiness=200" > /target/memory.reclaim' _ "$before" 2>/dev/null || true
+  mkdir -p "$PAUSED_AT_DIR"
+  touch "$PAUSED_AT_DIR/$PROFILE_NAME.offloaded"
+  after="$(cat "$dir/memory.current" 2>/dev/null || echo 0)"
+  swapped="$(cat "$dir/memory.swap.current" 2>/dev/null || echo 0)"
+  echo "Offloaded: $PROFILE_NAME ($((before / 1048576)) → $((after / 1048576)) MiB in RAM, $((swapped / 1048576)) MiB in swap)"
 }
 
 cmd_resume() {
@@ -2053,6 +2116,7 @@ cmd_resume() {
 cmd_stop() {
   echo "Stopping container: $PROFILE_NAME..."
   docker rm -f "$CONTAINER_NAME"
+  clear_paused_mark
   install_dock_entry
 }
 
@@ -2062,6 +2126,7 @@ cmd_delete() {
     docker rm -f "$CONTAINER_NAME" >/dev/null
     echo "  removed container $CONTAINER_NAME"
   fi
+  clear_paused_mark
   if [[ -d "$DATA_DIR" ]]; then
     rm -rf -- "$DATA_DIR"
     echo "  removed data $DATA_DIR"
@@ -2108,6 +2173,7 @@ cmd_pause_all() {
     [[ "$status" == "running" ]] || continue
     echo "Pausing: $PROFILE_NAME"
     docker pause "$CONTAINER_NAME"
+    mark_paused
   done < <(each_chrome_profile)
   PROFILE_NAME=""
   PROFILE_ICON_FILE=""
@@ -2131,6 +2197,21 @@ cmd_resume_all() {
   install_dock_entry
 }
 
+cmd_offload_all() {
+  local name status any=0
+  while IFS= read -r name; do
+    [[ "$name" =~ ^[a-zA-Z0-9_-]{1,64}$ ]] || continue
+    set_profile "$name"
+    status="$(container_status)"
+    [[ "$status" == "paused" ]] || continue
+    any=1
+    cmd_offload || true
+  done < <(each_chrome_profile)
+  ((any)) || echo "No paused browsers."
+  PROFILE_NAME=""
+  PROFILE_ICON_FILE=""
+}
+
 cmd_stop_all() {
   local name
   while IFS= read -r name; do
@@ -2139,6 +2220,7 @@ cmd_stop_all() {
     if docker inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
       echo "Stopping: $PROFILE_NAME"
       docker rm -f "$CONTAINER_NAME" >/dev/null
+      clear_paused_mark
     fi
   done < <(each_chrome_profile)
   PROFILE_NAME=""
@@ -2171,6 +2253,23 @@ cmd_status() {
   PYTHONPATH="$GUI_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 -c 'from control import status_json; print(status_json())'
 }
 
+cmd_check_update() {
+  PYTHONPATH="$GUI_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - <<'PY'
+from chrome_update import check_for_chrome_update
+import json
+res = check_for_chrome_update(force=True)
+print(json.dumps(res, indent=2))
+if res.get("update_available"):
+    latest = res.get("latest_version")
+    installed = res.get("installed_version") or "unknown"
+    print(f"Update available: {latest} (installed: {installed})")
+    print("Run `./bin/docked-browser build` or click Install Update in the app to install.")
+else:
+    installed = res.get("installed_version") or "latest"
+    print(f"Google Chrome is up to date ({installed}).")
+PY
+}
+
 # --- Dispatch ----------------------------------------------------------------
 main() {
   local cmd="${1:-}"
@@ -2186,6 +2285,9 @@ main() {
     status)
       cmd_status
       ;;
+    check-update)
+      cmd_check_update
+      ;;
     pause-all)
       cmd_pause_all
       ;;
@@ -2195,6 +2297,9 @@ main() {
     stop-all)
       cmd_stop_all
       ;;
+    offload-all)
+      cmd_offload_all
+      ;;
     refresh-dock)
       if [[ -n "${2:-}" ]]; then
         set_profile "$2"
@@ -2203,13 +2308,14 @@ main() {
         cmd_refresh_dock_all
       fi
       ;;
-    run|activate|pause|resume|stop|delete)
+    run|activate|pause|resume|offload|stop|delete)
       set_profile "${2:-default}"
       case "$cmd" in
         run)           cmd_run ;;
         activate)      cmd_activate ;;
         pause)         cmd_pause ;;
         resume)        cmd_resume ;;
+        offload)       cmd_offload ;;
         stop)          cmd_stop ;;
         delete)        cmd_delete ;;
       esac

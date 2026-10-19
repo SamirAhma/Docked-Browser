@@ -41,7 +41,7 @@ web UI / tray / focus-modal ──────────► bin/docked-browser
 1. **Do not** try to dim dock icons on pause (GNOME caches window icons).
 2. **Do not** put absolute icons under `hicolor` or invent `hicolor/index.theme`.
 3. **No host NVIDIA `.so` bind-mounts** into the container.
-4. **Pause does not free RAM.**
+4. **Pause keeps RAM** until the profile has been paused for `offload_after_min` (prefs.json, default 120, 0 = never; set in Help & about); then predict-sleep runs `offload`, which writes that container's `memory.reclaim` to push it to swap. Never lower `--memory` on a paused container for this (OOM kill).
 5. The focus modal lists every known profile (running, paused, stopped). A click runs `activate` for that exact name. Profiles… opens that picker. A profile’s dock click runs `activate` when Exec runs; wake-on-focus covers Dash raises that skip Exec.
 6. Dock right-click `Actions=` are rewritten when fleet state changes. Pause and Resume always stay listed for that profile. Profiles…, Resume all, and Close all appear only when valid.
 7. Each profile keeps its own Dash icon. Do not merge windows back onto one shared `docked-browser` class.
@@ -51,10 +51,10 @@ web UI / tray / focus-modal ──────────► bin/docked-browser
 ## CLI
 
 ```
-./bin/docked-browser build|run|activate|pause|resume|stop|delete [profile]
-./bin/docked-browser pause-all|resume-all|stop-all
+./bin/docked-browser build|run|activate|pause|resume|offload|stop|delete [profile]
+./bin/docked-browser pause-all|resume-all|stop-all|offload-all
 ./bin/docked-browser refresh-dock [profile]
-./bin/docked-browser focus|status
+./bin/docked-browser focus|status|check-update
 ./bin/docked-predict-sleep          # LinUCB auto-pause daemon (also started by GUI/tray)
 ```
 
@@ -71,6 +71,7 @@ Port of ambient-sleep’s disjoint LinUCB — actions are **KeepRunning** / **Pa
 - Open / Resume always target the **exact** profile via `activate` + `mark_used`.
 - Checkpoint: `~/.local/share/docked-browser/linucb.json`
 - Toggle: Advanced → Predict sleep, or `POST /api/predict-sleep` `{enabled}`.
+- Swap offload is separate from LinUCB and from that toggle: `offload_tick` runs every poll, and a profile paused ≥ `offload_after_min` (default **2h**) goes to swap once per pause. Clock: `~/.local/share/docked-browser/paused-at/<name>` (written by `pause`, cleared by resume/run/stop/delete).
 
 ## Usual-time suggestion
 

@@ -14,9 +14,9 @@ GET  /              → HTML UI
 GET  /api/status    → {image_built, containers[], profiles[], icons{}, theme, for_now}
 GET  /api/stats     → {containers:[{profile,cpu_pct,mem_used,mem_limit,mem_pct,state}]}
 GET  /api/prefs     → {theme, advanced}
-POST /api/prefs     → {theme?: light|dark|system, advanced?: bool}
+POST /api/prefs     → {theme?: light|dark|system, advanced?: bool, offload_after_min?: int}
 GET  /api/icon/<p>  → custom PNG bytes (404 if none)
-POST /api/action    → {action: build|run|activate|pause|resume|stop|delete|pause-all|resume-all|stop-all, profile?}
+POST /api/action    → {action: build|run|activate|pause|resume|stop|delete|pause-all|resume-all|stop-all|offload-all, profile?}
 POST /api/icon      → {profile, action: set|clear, image?: data-URL}
 GET  /api/predict-sleep → {enabled, updates, profiles{}, log[]}
 POST /api/predict-sleep → {enabled?: bool}
@@ -39,6 +39,7 @@ from urllib.parse import unquote, urlparse
 
 from control import get_theme, prefs_payload, save_prefs, session_wants_x11
 from habit_suggest import panel_for_now
+from chrome_update import check_for_chrome_update, update_status_payload
 from predict_sleep import ensure_daemon, mark_used, set_enabled as predict_set_enabled
 from predict_sleep import status_payload as predict_status
 from wake_paused import ensure_watcher
@@ -68,10 +69,11 @@ ALLOWED_ACTIONS = frozenset(
         "pause-all",
         "resume-all",
         "stop-all",
+        "offload-all",
     }
 )
 OPEN_ACTIONS = frozenset({"run", "activate", "resume"})
-FLEET_ACTIONS = frozenset({"pause-all", "resume-all", "stop-all"})
+FLEET_ACTIONS = frozenset({"pause-all", "resume-all", "stop-all", "offload-all"})
 
 # Public static files (favicon etc.) — basename only, no path traversal
 STATIC_FILES: dict[str, tuple[Path, str]] = {
@@ -120,7 +122,8 @@ def run_cockpit(action: str, profile: str | None = None) -> dict:
             env=desktop_env(),
             capture_output=True,
             text=True,
-            timeout=600 if action == "build" else 60,
+            # offload-all pages every paused profile out to disk.
+            timeout=900 if action == "build" else 600 if action == "offload-all" else 60,
         )
     except subprocess.TimeoutExpired:
         return {"ok": False, "output": f"Timed out running: {' '.join(cmd)}"}
@@ -229,10 +232,12 @@ def status_payload() -> dict:
         "profiles": profiles,
         "icons": {name: icon_path(name).is_file() for name in profiles},
         "for_now": panel_for_now(resumed),
+        "chrome_update": update_status_payload(),
         "theme": get_theme(),  # resolved light|dark for painting
         "theme_pref": prefs["theme"],
         "theme_resolved": prefs["theme_resolved"],
         "advanced": prefs["advanced"],
+        "offload_after_min": prefs["offload_after_min"],
         "predict_sleep": {
             "enabled": predict.get("enabled", True),
             "updates": predict.get("updates", 0),
@@ -498,6 +503,10 @@ class CockpitHandler(BaseHTTPRequestHandler):
             self._send_json(200, status_payload())
             return
 
+        if path == "/api/chrome-update":
+            self._send_json(200, update_status_payload())
+            return
+
         if path == "/api/stats":
             self._send_json(200, stats_payload())
             return
@@ -552,6 +561,12 @@ class CockpitHandler(BaseHTTPRequestHandler):
                 self._send_json(200, {"ok": True, **result})
                 return
             self._send_json(200, {"ok": True, **predict_status()})
+            return
+
+        if path == "/api/chrome-update":
+            # Force check for update
+            result = check_for_chrome_update(force=True)
+            self._send_json(200, {"ok": True, **result})
             return
 
         if path == "/api/icon":

@@ -21,6 +21,10 @@ Tick order (same as ambient-sleep; do not reorder):
 Checkpoint: ``~/.local/share/docked-browser/linucb.json``
 Per-profile last-used: ``~/.local/share/docked-browser/predict-sleep-state.json``
 
+Swap offload (separate from LinUCB): a profile that stays paused for
+``offload_after_min`` in prefs.json (default 120, 0 = never) is pushed to
+swap via ``bin/docked-browser offload``. Pause clock: ``paused-at/<profile>``.
+
 Weekday/hour suggestions live in ``gui/habit_suggest.py`` and run from this
 daemon. They do not change LinUCB or the pause-warning click.
 """
@@ -48,6 +52,9 @@ IDLE_TRIP_MS = 5 * 60 * 1000  # unused profile hard-pause (was 10m)
 FORCED_WAKE_WINDOW_S = 10 * 60
 WARNING_SECS = 20
 CANCEL_GRACE_SECS = 15 * 60  # after click-cancel, skip auto-pause for this long
+# Paused this long → RAM goes to swap. Resume before that stays instant.
+# The web UI changes it (prefs.json offload_after_min).
+DEFAULT_OFFLOAD_AFTER_MIN = 120
 MYT_OFFSET_SECS = 8 * 3600
 ALPHA = 0.5
 # docker top PID cache — warning poll checks focus every 400ms
@@ -59,6 +66,8 @@ MODEL_PATH = STATE_DIR / "linucb.json"
 SLEEP_STATE_PATH = STATE_DIR / "predict-sleep-state.json"
 LOCK_PATH = STATE_DIR / "predict-sleep.lock"
 ACTIVE_FILE = STATE_DIR / "active-profile"
+PAUSED_AT_DIR = STATE_DIR / "paused-at"
+PREFS_PATH = STATE_DIR / "prefs.json"
 CLI = Path(__file__).resolve().parent.parent / "bin" / "docked-browser"
 WM_CLASS = "docked-browser"
 
@@ -506,6 +515,86 @@ def docker_running_profiles() -> dict[str, dict]:
             continue
         out[profile] = {"name": name}
     return out
+
+
+def docker_paused_profiles() -> set[str] | None:
+    """Profiles whose chrome-* container is paused, or None if docker failed."""
+    try:
+        result = subprocess.run(
+            ["docker", "ps", "--filter", "name=chrome-", "--filter", "status=paused", "--format", "{{.Names}}"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    out: set[str] = set()
+    for line in result.stdout.splitlines():
+        name = line.strip()
+        if name.startswith("chrome-") and PROFILE_RE.match(name[len("chrome-") :]):
+            out.add(name[len("chrome-") :])
+    return out
+
+
+def offload_after_s() -> int:
+    """Seconds paused before offload, from prefs.json (0 = never)."""
+    try:
+        raw = json.loads(PREFS_PATH.read_text(encoding="utf-8"))
+        minutes = int(raw.get("offload_after_min", DEFAULT_OFFLOAD_AFTER_MIN))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError, AttributeError):
+        minutes = DEFAULT_OFFLOAD_AFTER_MIN
+    return max(minutes, 0) * 60
+
+
+def offload_tick(now: float | None = None) -> list[str]:
+    """Push profiles paused ≥ offload_after_s() to swap, once per pause.
+
+    The CLI writes ``paused-at/<profile>`` on pause and clears it on resume,
+    stop, and delete. A pause the CLI did not see starts its clock here.
+    """
+    after_s = offload_after_s()
+    if after_s <= 0:
+        return []
+    paused = docker_paused_profiles()
+    if paused is None:
+        return []
+    now = time.time() if now is None else now
+    lines: list[str] = []
+    try:
+        PAUSED_AT_DIR.mkdir(parents=True, exist_ok=True)
+        # Forget profiles that are no longer paused.
+        for path in PAUSED_AT_DIR.iterdir():
+            if path.name.removesuffix(".offloaded") not in paused:
+                path.unlink(missing_ok=True)
+    except OSError as exc:
+        _log(f"offload state error: {exc}")
+        return lines
+
+    for profile in sorted(paused):
+        stamp = PAUSED_AT_DIR / profile
+        done = PAUSED_AT_DIR / f"{profile}.offloaded"
+        try:
+            since = float(stamp.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            stamp.write_text(f"{int(now)}\n", encoding="utf-8")
+            continue
+        if done.exists() or now - since < after_s:
+            continue
+        # Mark first: a failed offload is not retried every poll.
+        done.touch()
+        try:
+            r = subprocess.run(
+                [str(CLI), "offload", profile], capture_output=True, text=True, timeout=300
+            )
+            out = (r.stdout.strip().splitlines() or [f"offload exit {r.returncode}"])[-1]
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            out = f"offload failed: {exc}"
+        line = f"{profile}: paused {int((now - since) // 60)}m → {out}"
+        lines.append(line)
+        _log(line)
+    return lines
 
 
 def pause_profile(profile: str) -> bool:
@@ -1110,9 +1199,19 @@ class PredictSleepDaemon:
             except Exception as exc:  # noqa: BLE001 — suggestion must not stop auto-pause
                 _log(f"habit error: {exc}")
             try:
+                from chrome_update import notify_chrome_update_if_needed
+
+                notify_chrome_update_if_needed()
+            except Exception as exc:  # noqa: BLE001 — update check must not stop auto-pause
+                _log(f"chrome update check error: {exc}")
+            try:
                 tick(bandit)
             except Exception as exc:  # noqa: BLE001 — keep daemon alive
                 _log(f"tick error: {exc}")
+            try:
+                offload_tick()
+            except Exception as exc:  # noqa: BLE001 — offload must not stop auto-pause
+                _log(f"offload error: {exc}")
 
 
 _daemon: PredictSleepDaemon | None = None

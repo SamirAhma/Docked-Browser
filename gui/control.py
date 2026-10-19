@@ -22,7 +22,9 @@ MODAL_ICON = ICON_DIR / "docked-browser-modal.png"
 BRAND_ICONS_PY = Path(__file__).resolve().parent / "brand_icons.py"
 
 THEMES = frozenset({"light", "dark", "system"})
-DEFAULT_PREFS = {"theme": "system", "advanced": False}
+# offload_after_min: minutes paused before RAM goes to swap (0 = never).
+DEFAULT_PREFS = {"theme": "system", "advanced": False, "offload_after_min": 120}
+OFFLOAD_MAX_MIN = 7 * 24 * 60
 
 BIN_DIR = Path(__file__).resolve().parent.parent / "bin"
 CLI = BIN_DIR / "docked-browser"
@@ -228,6 +230,11 @@ def load_prefs() -> dict:
     theme = str(data.get("theme", "system")).lower()
     data["theme"] = theme if theme in THEMES else "system"
     data["advanced"] = bool(data.get("advanced", False))
+    try:
+        minutes = int(data.get("offload_after_min", DEFAULT_PREFS["offload_after_min"]))
+    except (TypeError, ValueError):
+        minutes = DEFAULT_PREFS["offload_after_min"]
+    data["offload_after_min"] = min(max(minutes, 0), OFFLOAD_MAX_MIN)
     return data
 
 
@@ -240,6 +247,14 @@ def save_prefs(updates: dict) -> dict:
         data["theme"] = theme
     if "advanced" in updates:
         data["advanced"] = bool(updates["advanced"])
+    if "offload_after_min" in updates:
+        try:
+            minutes = int(updates["offload_after_min"])
+        except (TypeError, ValueError):
+            raise ValueError("offload_after_min must be a whole number of minutes") from None
+        if not 0 <= minutes <= OFFLOAD_MAX_MIN:
+            raise ValueError(f"offload_after_min must be 0–{OFFLOAD_MAX_MIN}")
+        data["offload_after_min"] = minutes
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     PREFS_FILE.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return prefs_payload_from(data)
@@ -273,6 +288,7 @@ def prefs_payload_from(data: dict) -> dict:
         "theme": pref,
         "theme_resolved": resolve_theme(pref),
         "advanced": bool(data.get("advanced", False)),
+        "offload_after_min": int(data.get("offload_after_min", DEFAULT_PREFS["offload_after_min"])),
     }
 
 
@@ -369,7 +385,8 @@ def run_cli(
             env=env,
             capture_output=True,
             text=True,
-            timeout=120,
+            # Chrome install apt-upgrades one image layer; 120s is not enough.
+            timeout=900 if action == "build" else 120,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"ok": False, "output": str(exc)}

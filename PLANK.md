@@ -79,7 +79,7 @@ Details and the full hard-constraint list are in [AGENTS.md](./AGENTS.md). Short
 - Dimming a dock icon, or swapping `Icon=`, on pause
 - Icons under `~/.local/share/icons/hicolor/`, or a hand-written `hicolor/index.theme`
 - Host NVIDIA `.so` bind-mounts into the Debian Chrome image
-- The claim that `docker pause` frees RAM or writes memory to disk (it freezes CPU; RAM stays)
+- The claim that `docker pause` by itself frees RAM (it freezes CPU; RAM stays until `offload` pushes it to swap after 2h)
 - One shared `StartupWMClass` or one shared Dash icon for every profile
 - Claims that Plank, Cinnamon, or X11 are supported
 - `docker run` from `gui/server.py` (the GUI calls `bin/docked-browser`)

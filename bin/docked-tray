@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 
 import gi
 
@@ -30,6 +31,7 @@ from control import (  # noqa: E402
     save_prefs,
     wayland_activation_token,
 )
+from chrome_update import load_update_state  # noqa: E402
 from predict_sleep import ensure_daemon  # noqa: E402
 from wake_paused import ensure_watcher  # noqa: E402
 
@@ -85,6 +87,14 @@ class Tray:
         head.set_sensitive(False)
         self.menu.append(head)
         self.menu.append(Gtk.SeparatorMenuItem())
+
+        update_info = load_update_state()
+        if update_info.get("update_available"):
+            latest = update_info.get("latest_version") or ""
+            update_item = Gtk.MenuItem.new_with_label(f"★ Install Chrome Update ({latest})…")
+            update_item.connect("activate", lambda *_: self._install_update())
+            self.menu.append(update_item)
+            self.menu.append(Gtk.SeparatorMenuItem())
 
         open_item = Gtk.MenuItem.new_with_label("Open Picker…")
         open_item.connect("activate", lambda *_: open_focus_modal())
@@ -174,6 +184,16 @@ class Tray:
         except ValueError:
             return
         # Menu rebuild would steal focus; prefs file is enough for web/modal
+
+    def _install_update(self) -> None:
+        def work() -> None:
+            res = run_cli("build")
+            if res.get("ok"):
+                from chrome_update import check_for_chrome_update
+                check_for_chrome_update(force=True)
+            GLib.idle_add(self._rebuild_menu)
+
+        threading.Thread(target=work, daemon=True).start()
 
 
 def main() -> int:

@@ -52,6 +52,9 @@
       --setup-bg: #fff8eb;
       --setup-ink: #9a5b00;
       --setup-line: rgba(255, 149, 0, 0.2);
+      --update-bg: #eef7ff;
+      --update-ink: #005bb5;
+      --update-line: rgba(0, 113, 227, 0.2);
       --log-bg: #1d1d1f;
       --log-ink: #f5f5f7;
       --icon-ph: linear-gradient(160deg, #3a3a3c, #1d1d1f);
@@ -85,6 +88,9 @@
       --setup-bg: #3a2e14;
       --setup-ink: #ffd60a;
       --setup-line: rgba(255, 214, 10, 0.25);
+      --update-bg: #0c2d48;
+      --update-ink: #64b5f6;
+      --update-line: rgba(10, 132, 255, 0.3);
       --log-bg: #000000;
       --log-ink: #f5f5f7;
       --icon-ph: linear-gradient(160deg, #636366, #3a3a3c);
@@ -273,6 +279,27 @@
       flex: 1 1 160px;
     }
 
+    .update-banner {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.9rem 1.05rem;
+      margin-bottom: 1rem;
+      border-radius: var(--radius);
+      background: var(--update-bg);
+      border: 1px solid var(--update-line);
+    }
+
+    .update-banner p {
+      margin: 0;
+      color: var(--update-ink);
+      font-weight: 500;
+      font-size: 0.95rem;
+      flex: 1 1 160px;
+    }
+
     .shell {
       background: var(--panel);
       border-radius: var(--radius);
@@ -301,6 +328,21 @@
       font-weight: 500;
       color: var(--ink);
       outline: none;
+    }
+
+    input.minutes {
+      width: 6.5rem;
+      padding: 0.45rem 0.75rem;
+      border: 1px solid var(--line);
+      border-radius: 980px;
+      background: var(--input-bg);
+      font: inherit;
+      color: var(--ink);
+      outline: none;
+    }
+    input.minutes:focus {
+      border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
     }
 
     input[type="text"]::placeholder { color: var(--placeholder); }
@@ -674,6 +716,14 @@
       <button type="button" class="btn-dark" @click="run('build')" :disabled="busy">Install</button>
     </div>
 
+    <div class="update-banner" x-show="imageBuilt && chromeUpdate && chromeUpdate.update_available">
+      <p>
+        <strong>Chrome update available</strong><br />
+        <span style="font-size:0.86rem;opacity:0.9" x-text="'Version ' + (chromeUpdate.latest_version || '') + ' is ready to install' + (chromeUpdate.installed_version ? ' (installed: ' + chromeUpdate.installed_version + ')' : '')"></span>
+      </p>
+      <button type="button" class="btn-primary" @click="run('build')" :disabled="busy">Install update</button>
+    </div>
+
     <div class="shell">
       <div class="compose">
         <input
@@ -947,7 +997,7 @@
           </div>
           <div>
             <dt>Pause</dt>
-            <dd>Sleeps it in RAM (almost no CPU). Unused profiles auto-sleep via predict-sleep (ambient LinUCB). Resume opens that exact profile.</dd>
+            <dd>Sleeps it in RAM (almost no CPU)<span x-text="offloadAfterMin > 0 ? '; after ' + offloadLabel + ' paused it moves to swap on disk' : ''"></span>. Unused profiles auto-sleep via predict-sleep (ambient LinUCB). Resume opens that exact profile.</dd>
           </div>
           <div>
             <dt>Close</dt>
@@ -989,9 +1039,40 @@
             <ul class="weak">
               <li>Not a VPN or VM</li>
               <li>Needs Docker + Linux</li>
-              <li>Pause keeps RAM</li>
+              <li x-text="offloadAfterMin > 0 ? 'Pause keeps RAM for ' + offloadLabel : 'Pause keeps RAM'"></li>
             </ul>
           </div>
+        </div>
+        <div style="margin-top:1rem">
+          <p class="group-label" style="padding-left:0;padding-right:0">Move to disk</p>
+          <p class="help" style="margin:0 0 0.55rem">
+            A paused browser keeps its RAM, then moves to swap on disk after this many minutes (0 = never).
+            Resuming one from disk is slow for a few seconds.
+          </p>
+          <p style="margin:0;display:flex;flex-wrap:wrap;gap:0.35rem;align-items:center">
+            <label style="display:flex;gap:0.45rem;align-items:center">
+              <span>Minutes before disk</span>
+              <input
+                type="number"
+                class="minutes"
+                min="0"
+                max="10080"
+                step="1"
+                x-model.number="offloadAfterMin"
+                @focus="offloadEditing = true"
+                @blur="offloadEditing = false"
+                @change="saveOffloadAfter()"
+                :disabled="busy"
+              >
+            </label>
+            <button
+              type="button"
+              class="btn-ghost"
+              @click="run('offload-all')"
+              :disabled="busy || !canResumeAll"
+              title="Move every paused browser to swap now"
+            >Move all paused to disk</button>
+          </p>
         </div>
         <div class="maint" x-show="advanced" style="margin-top:1rem">
           <p class="group-label" style="padding-left:0;padding-right:0">This browser</p>
@@ -1029,10 +1110,14 @@
           <p class="group-label" style="padding-left:0;padding-right:0;padding-top:1rem">All browsers</p>
           <p class="help" style="margin:0 0 0.55rem">
             Shared Chrome image and this window’s list — not one instance.
+            <span x-show="chromeUpdate && chromeUpdate.installed_version" x-text="'Current installed version: ' + chromeUpdate.installed_version + '.'"></span>
           </p>
           <p style="margin:0;display:flex;flex-wrap:wrap;gap:0.35rem">
             <button type="button" class="btn-ghost" @click="run('build')" :disabled="busy || !imageBuilt">
               Update Chrome install
+            </button>
+            <button type="button" class="btn-ghost" @click="checkChromeUpdate()" :disabled="busy || checkingUpdate">
+              <span x-text="checkingUpdate ? 'Checking update…' : 'Check for Chrome update'"></span>
             </button>
             <button type="button" class="btn-ghost" @click="refresh(); refreshStats()" :disabled="busy">
               Refresh list
@@ -1063,7 +1148,11 @@
         theme: "system",
         advanced: false,
         predictSleep: true,
+        offloadAfterMin: 120,
+        offloadEditing: false,
         predictUpdates: 0,
+        chromeUpdate: null,
+        checkingUpdate: false,
         _mq: null,
 
         get selected() {
@@ -1147,6 +1236,14 @@
 
         get canPauseAll() {
           return this.liveRows.some((r) => r.running);
+        },
+
+        get offloadLabel() {
+          const m = this.offloadAfterMin;
+          if (m < 60) return m + " min";
+          const h = Math.floor(m / 60);
+          const rest = m % 60;
+          return rest ? `${h}h ${rest}m` : (h === 1 ? "1 hour" : h + " hours");
         },
 
         get canResumeAll() {
@@ -1318,9 +1415,15 @@
           this.forNow = typeof data.for_now === "string" ? data.for_now : "";
           this.icons = data.icons || {};
           this.iconTick = Date.now();
+          if (typeof data.offload_after_min === "number" && !this.offloadEditing) {
+            this.offloadAfterMin = data.offload_after_min;
+          }
           if (data.predict_sleep) {
             this.predictSleep = data.predict_sleep.enabled !== false;
             this.predictUpdates = data.predict_sleep.updates || 0;
+          }
+          if (data.chrome_update) {
+            this.chromeUpdate = data.chrome_update;
           }
           if (data.theme_pref === "dark" || data.theme_pref === "light" || data.theme_pref === "system") {
             this.applyTheme(data.theme_pref, true);
@@ -1343,6 +1446,33 @@
           }
         },
 
+        async saveOffloadAfter() {
+          const m = Number(this.offloadAfterMin);
+          if (!Number.isInteger(m) || m < 0 || m > 10080) {
+            this.appendLog("Minutes before disk must be a whole number from 0 to 10080.");
+            await this.refresh(true);
+            return;
+          }
+          try {
+            const res = await fetch("/api/prefs", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ offload_after_min: m }),
+            });
+            const data = await res.json();
+            if (!data.ok) {
+              this.appendLog("Could not save: " + (data.output || res.status));
+              return;
+            }
+            this.offloadAfterMin = data.offload_after_min;
+            this.appendLog(m === 0
+              ? "Paused browsers now stay in RAM."
+              : `Paused browsers now move to disk after ${this.offloadLabel}.`);
+          } catch (err) {
+            this.appendLog("Could not save: " + err);
+          }
+        },
+
         async setPredictSleep(on) {
           this.predictSleep = !!on;
           try {
@@ -1355,6 +1485,34 @@
             if (data && typeof data.enabled === "boolean") this.predictSleep = data.enabled;
             if (typeof data.updates === "number") this.predictUpdates = data.updates;
           } catch (_) {}
+        },
+
+        async checkChromeUpdate() {
+          if (this.checkingUpdate || this.busy) return;
+          this.checkingUpdate = true;
+          this.appendLog("Checking for Google Chrome updates…");
+          try {
+            const res = await fetch("/api/chrome-update", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({}),
+            });
+            const data = await res.json();
+            if (data && data.ok) {
+              this.chromeUpdate = data;
+              if (data.update_available) {
+                this.appendLog(`New Chrome update available: ${data.latest_version} (installed: ${data.installed_version || 'unknown'}).`);
+              } else {
+                this.appendLog(`Chrome is up to date (${data.installed_version || 'latest'}).`);
+              }
+            } else {
+              this.appendLog("Could not check Chrome update.");
+            }
+          } catch (err) {
+            this.appendLog("Chrome update check failed: " + err);
+          } finally {
+            this.checkingUpdate = false;
+          }
         },
 
         async onIconPicked(event) {
@@ -1422,7 +1580,7 @@
 
         async run(action, profileOverride) {
           if (this.busy) return;
-          const fleet = action === "pause-all" || action === "resume-all" || action === "stop-all";
+          const fleet = action === "pause-all" || action === "resume-all" || action === "stop-all" || action === "offload-all";
           const profile = (profileOverride || this.profile || "").trim();
           if (action !== "build" && !fleet && !profile) {
             this.appendLog("Type a browser name first.");
@@ -1450,6 +1608,7 @@
             "pause-all": this.canPauseAll,
             "resume-all": this.canResumeAll,
             "stop-all": this.liveRows.length > 0,
+            "offload-all": this.canResumeAll,
           };
           if (!allowed[action]) {
             if (action === "delete") {
@@ -1474,6 +1633,7 @@
             "pause-all": "Pausing all open browsers…",
             "resume-all": "Resuming all paused browsers…",
             "stop-all": "Closing all open browsers…",
+            "offload-all": "Moving paused browsers to disk…",
           };
           this.busyText = labels[action] || "Working…";
           this.appendLog(this.busyText);
