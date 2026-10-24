@@ -13,10 +13,13 @@ you are reading often sits near 0% while background tabs sit higher.
 Tick order (same as ambient-sleep; do not reorder):
   1. Sample fused idle for each *running* profile
   2. Credit the previous decision (delayed reward + wall clock)
-  3. Circuit breaker (≥5 min idle) → force pause, skip bandit
-  4. Build context → LinUCB select
+  3. Circuit breaker (≥5 min idle) → force pause; credit Pause +0.5 on success
+  4. Build context → LinUCB select (ε-explore Pause when idle ≥ 90s)
   5. Pause only if AllowSleep and idle ≥ 60s; otherwise keep running
   6. Stash decision for next poll
+
+KeepRunning reward ramps from mild positive (still somewhat idle) toward
+−0.5 as fused idle approaches the breaker, so “kept too long” actually hurts.
 
 Checkpoint: ``~/.local/share/docked-browser/linucb.json``
 Per-profile last-used: ``~/.local/share/docked-browser/predict-sleep-state.json``
@@ -49,6 +52,9 @@ FEATURE_LAYOUT = 2  # v2: container CPU is not an activity signal
 POLL_INTERVAL_S = 60
 MIN_AI_PAUSE_IDLE_MS = 60_000
 IDLE_TRIP_MS = 5 * 60 * 1000  # unused profile hard-pause (was 10m)
+# When Keep wins but idle is past this, ε-explore Pause so the Pause arm gets practice.
+EXPLORE_PAUSE_IDLE_MS = 90_000
+EXPLORE_PAUSE_EPS = 0.12
 FORCED_WAKE_WINDOW_S = 10 * 60
 WARNING_SECS = 20
 CANCEL_GRACE_SECS = 15 * 60  # after click-cancel, skip auto-pause for this long
@@ -57,6 +63,11 @@ CANCEL_GRACE_SECS = 15 * 60  # after click-cancel, skip auto-pause for this long
 DEFAULT_OFFLOAD_AFTER_MIN = 120
 MYT_OFFSET_SECS = 8 * 3600
 ALPHA = 0.5
+# KeepRunning reward endpoints (idle between still-active and breaker).
+KEEP_REWARD_ACTIVE = 1.0
+KEEP_REWARD_MID_START = 0.2  # just past still-active
+KEEP_REWARD_AT_BREAKER = -0.5
+PAUSE_REWARD_SUCCESS = 0.5
 # docker top PID cache — warning poll checks focus every 400ms
 _PID_CACHE_TTL_S = 2.0
 
@@ -203,20 +214,23 @@ class Context:
 def reward_from_idle(action: str, idle_after_ms: int, wall_elapsed_ms: int) -> float:
     forced_wake_ms = 15_000
     still_active_ms = 30_000
-    gone_ms = 5 * 60 * 1000
+    gone_ms = IDLE_TRIP_MS
     if action == ACTION_PAUSE:
         absence = max(idle_after_ms, wall_elapsed_ms)
         if absence >= gone_ms:
-            return 0.5
+            return PAUSE_REWARD_SUCCESS
         if idle_after_ms < forced_wake_ms:
             return -1.0
         return 0.0
-    # KeepRunning
+    # KeepRunning — soft positive while briefly idle, ramp to a real penalty
+    # as idle approaches the circuit breaker (was a flat −0.05 at 5 min).
     if idle_after_ms < still_active_ms:
-        return 1.0
+        return KEEP_REWARD_ACTIVE
     if idle_after_ms >= gone_ms:
-        return -0.05
-    return 0.2
+        return KEEP_REWARD_AT_BREAKER
+    span = float(gone_ms - still_active_ms)
+    t = (idle_after_ms - still_active_ms) / span  # 0 → 1
+    return KEEP_REWARD_MID_START + t * (KEEP_REWARD_AT_BREAKER - KEEP_REWARD_MID_START)
 
 
 def is_forced_wake(action: str, idle_after_ms: int, wall_elapsed_ms: int) -> bool:
@@ -225,6 +239,15 @@ def is_forced_wake(action: str, idle_after_ms: int, wall_elapsed_ms: int) -> boo
         and idle_after_ms < 15_000
         and wall_elapsed_ms < 5 * 60 * 1000
     )
+
+
+def should_explore_pause(profile: str, idle_ms: int, now: float) -> bool:
+    """Deterministic ε-explore: try Pause on a fraction of minutes when idle ≥ 90s."""
+    if idle_ms < EXPLORE_PAUSE_IDLE_MS:
+        return False
+    bucket = int(now // 60)
+    h = _fnv1a(f"{profile}:{bucket}")
+    return (h % 1000) < int(EXPLORE_PAUSE_EPS * 1000)
 
 
 def heuristic_action(ctx: Context) -> str:
@@ -1083,11 +1106,15 @@ def tick(bandit: LinUcb | None = None, store: SleepStore | None = None) -> list[
             idle_ms=idle_ms,
         )
 
-        # Circuit breaker — force pause (still warn once), skip bandit
+        # Circuit breaker — force pause (still warn once), skip bandit select.
+        # On success, credit Pause so the arm sees the outcome it never chose.
         if idle_ms >= IDLE_TRIP_MS and not in_use:
             paused, line = maybe_pause_with_warning(
                 profile, bandit=bandit, ctx=ctx, st=st, reason=f"BREAKER idle_ms={idle_ms}"
             )
+            if paused:
+                bandit.update(ctx, ACTION_PAUSE, PAUSE_REWARD_SUCCESS)
+                line = f"{line} (Pause +{PAUSE_REWARD_SUCCESS})"
             lines.append(line)
             _log(line)
             st.pending = None
@@ -1095,16 +1122,25 @@ def tick(bandit: LinUcb | None = None, store: SleepStore | None = None) -> list[
             continue
 
         action = bandit.select(ctx)
+        explored = False
+        if (
+            action == ACTION_KEEP
+            and not in_use
+            and should_explore_pause(profile, idle_ms, now)
+        ):
+            action = ACTION_PAUSE
+            explored = True
         applied = ACTION_KEEP
 
         if action == ACTION_PAUSE and idle_ms >= MIN_AI_PAUSE_IDLE_MS and not in_use:
+            tag = "explore=Pause" if explored else "action=Pause"
             paused, line = maybe_pause_with_warning(
                 profile,
                 bandit=bandit,
                 ctx=ctx,
                 st=st,
                 reason=(
-                    f"action=Pause idle_ms={idle_ms} "
+                    f"{tag} idle_ms={idle_ms} "
                     f"active={int(is_active)} focused={focused_name or '-'} "
                     f"n={bandit.updates}"
                 ),

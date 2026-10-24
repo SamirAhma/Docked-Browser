@@ -63,8 +63,8 @@ D-Bus `org.gnome.shell.extensions.FocusedWindow.ActivateClass` on the Focused Wi
 
 - Poll every **60s** (`POLL_INTERVAL_S`). The loop waits one interval before the first tick.
 - **In use** means that profile’s Chrome window is the focused one: focused-window PID is in `docker top` of `chrome-<profile>`. Container CPU is ignored. A focused window is not auto-paused.
-- LinUCB may choose Pause only after fused idle is at least **60s** (`MIN_AI_PAUSE_IDLE_MS`) and the window is not in use.
-- Circuit breaker: idle at least **5 minutes** (`IDLE_TRIP_MS`) and not in use forces pause and skips the bandit. The constant is what runs.
+- LinUCB may choose Pause only after fused idle is at least **60s** (`MIN_AI_PAUSE_IDLE_MS`) and the window is not in use. When Keep wins but idle is at least **90s** (`EXPLORE_PAUSE_IDLE_MS`), about **12%** of minutes (`EXPLORE_PAUSE_EPS`) force a Pause try so that arm gets practice.
+- Circuit breaker: idle at least **5 minutes** (`IDLE_TRIP_MS`) and not in use forces pause and skips bandit select. A successful breaker pause still credits the Pause arm `+0.5`. KeepRunning rewards ramp from mild positive toward **−0.5** as idle approaches the breaker (see `reward_from_idle`).
 - Either path shows a **20s** notification first (`WARNING_SECS`). “Keep awake”, a click on the notification, or focusing that profile cancels the pause and sets a 15-minute grace (`CANCEL_GRACE_SECS`). During the warning, focus is rechecked every 400ms.
 - The pause itself is `bin/docked-browser pause <profile>` (`pause_profile`). That command runs `docker pause` and refreshes dock entries. Open and Resume call `activate`, which also `mark_used` for that exact name.
 
