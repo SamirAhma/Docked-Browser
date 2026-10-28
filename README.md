@@ -68,12 +68,12 @@ CLI:
 ./bin/docked-browser resume-all
 ./bin/docked-browser stop-all
 ./bin/docked-browser refresh-dock     # rebuild each profile’s dock icon
-./bin/docked-browser focus            # profile picker (Profiles… on the dock menu)
+./bin/docked-browser focus            # profile picker
 ./bin/docked-browser status           # JSON status
 ./bin/docked-browser check-update     # check if a new Chrome update is available
 ```
 
-**Dock (GNOME Dash):** one icon per profile (`Docked · name`). Left-click runs `activate` for that name when Exec runs. If the window is still mapped (including after pause), GNOME may only raise it — `gui/wake_paused.py` watches focus via the Focused Window helper and resumes a paused profile when its class becomes focused. Right-click always lists **Pause** and **Resume** for that profile (GNOME Shell freezes `Actions=` from the first load, so the menu does not swap them by container state). Profiles…, Resume all, and Close all appear when they apply. Pin icons from the Dash if you want. A paused profile leaves the Dash until resume when `SetDashHidden` is loaded (the running Shell loads that method only after the next login; until then the icon may stay visible and left-click still resumes via wake-on-focus).
+**Dock (GNOME Dash):** one icon per profile (`Docked · name`). Left-click runs `activate` for that name when Exec runs. If the window is still mapped (including after pause), GNOME may only raise it — `gui/wake_paused.py` watches focus via the Focused Window helper and resumes a paused profile when its class becomes focused. Right-click always lists **Pause** and **Resume** for that profile (GNOME Shell freezes `Actions=` from the first load, so the menu does not swap them by container state). Pin icons from the Dash if you want. A paused profile leaves the Dash until resume when `SetDashHidden` is loaded (the running Shell loads that method only after the next login; until then the icon may stay visible and left-click still resumes via wake-on-focus).
 
 ## Workspaces (GNOME)
 

@@ -41,7 +41,7 @@ When the Chrome window is still mapped, GNOME Dash often activates the existing 
 
 `gui/wake_paused.py` closes that gap on the supported GNOME Wayland path: it polls `FocusedWindow.Get`, and when the focused class is `docked-browser-<profile>` and `chrome-<profile>` is paused, it runs `activate` for that name. Wake is edge-triggered on focus enter (debounce 2s) so a pause while that window is already focused does not immediately fight resume. The watcher is started from the GUI server, tray, predict-sleep daemon, and on `pause` / `pause-all`.
 
-Right-click `Actions=` always lists **Pause** and **Resume** for that profile (GNOME Shell freezes `Actions=` from the first load, so the menu must not swap them by state). Profiles…, Resume all, and Close all are shared fleet items and appear only when valid. `install_dock_entry` rewrites every profile `.desktop` when fleet state changes, then runs `sync_paused_dash` (and still calls the untested Plank sync).
+Right-click `Actions=` always lists **Pause** and **Resume** for that profile (GNOME Shell freezes `Actions=` from the first load, so the menu must not swap them by state). `install_dock_entry` rewrites every profile `.desktop` when fleet state changes, then runs `sync_paused_dash` (and still calls the untested Plank sync).
 
 `--user-data-dir` is set as well. The named data dir plus `--class` / `--name` keeps each profile on its own launcher.
 

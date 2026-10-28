@@ -37,7 +37,6 @@ ACTIVE_FILE="$STATE_DIR/active-profile"
 # <name> holds the epoch of the last pause; <name>.offloaded marks a swap offload.
 PAUSED_AT_DIR="$STATE_DIR/paused-at"
 # One Dash icon per profile. Right-click Pause and Resume run on that profile.
-# Profiles…, Resume all, and Close all stay shared fleet items when valid.
 APP_CLASS=""
 DESKTOP_FILE=""
 
@@ -65,7 +64,7 @@ Commands:
   resume-all            Resume every paused chrome-* container
   stop-all              Stop every chrome-* container
   refresh-dock [name]   Rebuild each profile’s Dash icon (+ GUI badge if name given)
-  focus                 Open the focus modal (Profiles… on the dock menu)
+  focus                 Open the focus modal
   status                Print profile status as JSON
   check-update          Check if a new Google Chrome version is available
 
@@ -1002,7 +1001,6 @@ raise_profile_window() {
 #   • One .desktop + badge per profile; Chrome --class matches StartupWMClass
 #   • Left-click → activate that profile
 #   • Right-click Pause / Resume runs on that profile only
-#     (Profiles…, Resume all, Close all — only when valid)
 #   • Never invent a partial hicolor/index.theme
 #   • Icons live under ~/.local/share/docked-browser/icons/ (not hicolor)
 #   • Do not swap Icon= when a profile pauses (GNOME caches window icons)
@@ -1010,21 +1008,6 @@ raise_profile_window() {
 #     (docker state running, not paused or stopped). The window stays.
 #     Do not dim or swap Icon=. Only that profile’s .dockitem is added
 #     or removed; other launchers stay.
-
-fleet_flags() {
-  # Sets HAS_RUNNING / HAS_PAUSED (0|1) from chrome-* containers.
-  HAS_RUNNING=0
-  HAS_PAUSED=0
-  local name status
-  while IFS= read -r name; do
-    [[ "$name" == chrome-* ]] || continue
-    status="$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null || true)"
-    case "$status" in
-      running) HAS_RUNNING=1 ;;
-      paused)  HAS_PAUSED=1 ;;
-    esac
-  done < <(docker ps -a --filter 'name=chrome-' --format '{{.Names}}' 2>/dev/null || true)
-}
 
 ensure_profile_gui_icon() {
   # Badge for this profile’s Dash icon, and for the web UI / focus modal.
@@ -1625,28 +1608,6 @@ install_dock_entry() {
 
   cleanup_legacy_dock_files
   prune_stale_profile_desktops
-  fleet_flags
-
-  local profiles_section resume_all_section="" close_all_section=""
-  profiles_section="
-[Desktop Action profiles]
-Name=Profiles…
-Exec=$SCRIPT_PATH focus
-"
-  if ((HAS_PAUSED)); then
-    resume_all_section="
-[Desktop Action resume-all]
-Name=Resume all
-Exec=$SCRIPT_PATH resume-all
-"
-  fi
-  if ((HAS_RUNNING || HAS_PAUSED)); then
-    close_all_section="
-[Desktop Action close-all]
-Name=Close all
-Exec=$SCRIPT_PATH stop-all
-"
-  fi
 
   while IFS= read -r name; do
     [[ "$name" =~ ^[a-zA-Z0-9_-]{1,64}$ ]] || continue
@@ -1654,7 +1615,7 @@ Exec=$SCRIPT_PATH stop-all
     # Both stay on the menu. GNOME Shell 50 freezes Actions= from the first
     # time it loads the .desktop, so swapping Pause for Resume when the
     # container changes state never reaches this right-click menu.
-    actions_csv="pause;resume;profiles;"
+    actions_csv="pause;resume;"
     action_sections=("
 [Desktop Action pause]
 Name=Pause
@@ -1663,15 +1624,7 @@ Exec=$SCRIPT_PATH pause $PROFILE_NAME
 [Desktop Action resume]
 Name=Resume
 Exec=$SCRIPT_PATH resume $PROFILE_NAME
-" "$profiles_section")
-    if ((HAS_PAUSED)); then
-      actions_csv+="resume-all;"
-      action_sections+=("$resume_all_section")
-    fi
-    if ((HAS_RUNNING || HAS_PAUSED)); then
-      actions_csv+="close-all;"
-      action_sections+=("$close_all_section")
-    fi
+")
     ensure_profile_gui_icon
     write_profile_desktop
     written+=("$PROFILE_NAME")
@@ -1714,7 +1667,7 @@ reload_gnome_shell_actions() {
   [[ "$desktop" == *[Gg][Nn][Oo][Mm][Ee]* ]] || return 0
   local bus="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus"
   [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" || -S "$bus" ]] || return 0
-  local gen="pause-resume-v1"
+  local gen="pause-resume-v2"
   local stamp="${STATE_DIR}/gnome-shell-actions-gen"
   [[ -f "$stamp" && "$(tr -d '[:space:]' < "$stamp")" == "$gen" ]] && return 0
   compgen -G "${DESKTOP_DIR}/docked-browser-*.desktop" >/dev/null || return 0
