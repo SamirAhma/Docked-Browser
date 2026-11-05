@@ -1,0 +1,13 @@
+.{
+    .name = .docked_native,
+    .version = "0.0.1",
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{
+        .nanoui = .{
+            .url = "git+https://github.com/justrach/nanoui#e26765e8422f0a719e3bb90d9d97067d92d495b7",
+            .hash = "nanoui-0.12.0-we0KMbp2JQDpk0V0TsRtnyfRjh3MzkJUpBCekoD2YdOc",
+        },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+    .fingerprint = 0x9d4b456d0a48a016,
+}
