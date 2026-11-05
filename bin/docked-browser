@@ -1890,6 +1890,23 @@ append_nvidia_gpu_args() {
 }
 
 # --- Commands ----------------------------------------------------------------
+# The wake-on-focus watcher runs from wake-paused/ (Rust) when built; without
+# cargo, gui/wake_paused.py keeps doing the job.
+build_wake_watcher() {
+  local cargo="cargo"
+  command -v cargo >/dev/null 2>&1 || cargo="${HOME}/.cargo/bin/cargo"
+  if [[ ! -x "$(command -v "$cargo" 2>/dev/null)" ]]; then
+    echo "Wake watcher: cargo not found, using gui/wake_paused.py."
+    return 0
+  fi
+  echo "Building wake watcher (wake-paused/)..."
+  if "$cargo" build --release --quiet --manifest-path "$ROOT_DIR/wake-paused/Cargo.toml"; then
+    echo "Wake watcher built. It takes over at the next login (or after the running watcher stops)."
+  else
+    echo "Wake watcher build failed, using gui/wake_paused.py."
+  fi
+}
+
 cmd_build() {
   echo "Building Docked Browser image (${IMAGE_NAME})..."
   # New timestamp invalidates only the Chrome apt layer (see Dockerfile CHROME_REFRESH).
@@ -1900,6 +1917,7 @@ cmd_build() {
   # Keep old tag working until people rebuild habits
   docker tag "$IMAGE_NAME" local-chrome-cockpit 2>/dev/null || true
   echo "Chrome image rebuilt. Close and reopen a browser to use the new version."
+  build_wake_watcher
   PYTHONPATH="$GUI_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - <<'PY'
 from chrome_update import check_for_chrome_update
 check_for_chrome_update(force=True)

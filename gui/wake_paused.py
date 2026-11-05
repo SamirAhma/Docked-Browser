@@ -34,6 +34,7 @@ from control import desktop_env
 
 GUI_DIR = Path(__file__).resolve().parent
 CLI = GUI_DIR.parent / "bin" / "docked-browser"
+RUST_WATCHER = GUI_DIR.parent / "wake-paused" / "target" / "release" / "wake-paused"
 STATE_DIR = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "docked-browser"
 LOCK_PATH = STATE_DIR / "wake-paused.lock"
 LOG_PATH = STATE_DIR / "wake-paused.log"
@@ -271,8 +272,24 @@ def main() -> int:
 
 
 def ensure_watcher() -> None:
-    """Start the focus watcher if none is running."""
+    """Start the focus watcher if none is running.
+
+    Runs the Rust watcher (``wake-paused/``, built by ``docked-browser build``)
+    when its binary exists; this Python watcher is the fallback. Both take the
+    same lock, so only one ever runs.
+    """
     env = desktop_env()
+    if RUST_WATCHER.is_file() and os.access(RUST_WATCHER, os.X_OK):
+        subprocess.Popen(
+            [str(RUST_WATCHER), "--cli", str(CLI)],
+            env=env,
+            cwd=str(GUI_DIR),
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return
     extra = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = str(GUI_DIR) + (os.pathsep + extra if extra else "")
     subprocess.Popen(

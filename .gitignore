@@ -45,3 +45,6 @@ temp/
 # If someone copies a filled-in desktop file into the repo by mistake:
 chrome-cockpit.desktop
 docked-browser.desktop
+
+# Rust build output
+wake-paused/target/
