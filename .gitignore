@@ -48,3 +48,4 @@ docked-browser.desktop
 
 # Rust build output
 wake-paused/target/
+gui-server/target/

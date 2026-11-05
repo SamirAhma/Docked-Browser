@@ -1,0 +1,18 @@
+[package]
+name = "docked-browser-gui"
+version = "0.1.0"
+edition = "2024"
+description = "Docked Browser local web UI server (Rust port of gui/server.py)"
+license = "MIT"
+
+[dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }
+base64 = "0.22"
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

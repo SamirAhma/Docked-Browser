@@ -26,5 +26,11 @@ fi
 # Apply paused-profile Dash hiding once the Shell extension from this login is up.
 "$BIN_DIR/docked-browser" refresh-dock >/dev/null 2>&1 &
 
+# Rust server (gui-server/, built by `docked-browser build`) when present;
+# gui/server.py serves the same API without cargo.
+RUST_GUI="$ROOT_DIR/gui-server/target/release/docked-browser-gui"
 cd "$GUI_DIR"
+if [[ -x "$RUST_GUI" && -z "${DOCKED_BROWSER_PYTHON_GUI:-}" ]]; then
+  exec "$RUST_GUI"
+fi
 exec env PYTHONUNBUFFERED=1 python3 "$GUI_DIR/server.py"

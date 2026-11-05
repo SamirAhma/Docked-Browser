@@ -1890,13 +1890,14 @@ append_nvidia_gpu_args() {
 }
 
 # --- Commands ----------------------------------------------------------------
-# The wake-on-focus watcher runs from wake-paused/ (Rust) when built; without
-# cargo, gui/wake_paused.py keeps doing the job.
+# The wake-on-focus watcher runs from wake-paused/ (Rust) and the web UI from
+# gui-server/ (Rust) when built; without cargo, gui/wake_paused.py and
+# gui/server.py keep doing the job.
 build_wake_watcher() {
   local cargo="cargo"
   command -v cargo >/dev/null 2>&1 || cargo="${HOME}/.cargo/bin/cargo"
   if [[ ! -x "$(command -v "$cargo" 2>/dev/null)" ]]; then
-    echo "Wake watcher: cargo not found, using gui/wake_paused.py."
+    echo "Wake watcher / web UI: cargo not found, using gui/wake_paused.py and gui/server.py."
     return 0
   fi
   echo "Building wake watcher (wake-paused/)..."
@@ -1904,6 +1905,13 @@ build_wake_watcher() {
     echo "Wake watcher built. It takes over at the next login (or after the running watcher stops)."
   else
     echo "Wake watcher build failed, using gui/wake_paused.py."
+  fi
+  # Web UI server: bin/start-gui runs this binary when present, else gui/server.py.
+  echo "Building web UI server (gui-server/)..."
+  if "$cargo" build --release --quiet --manifest-path "$ROOT_DIR/gui-server/Cargo.toml"; then
+    echo "Web UI server built. It takes over the next time bin/start-gui starts it."
+  else
+    echo "Web UI server build failed, using gui/server.py."
   fi
 }
 

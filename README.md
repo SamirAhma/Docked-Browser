@@ -102,7 +102,7 @@ The app patches the [Focused Window](https://github.com/flexagoon/focused-window
 │   └── install-nvidia-toolkit.sh
 ├── gui/
 │   ├── control.py
-│   ├── server.py
+│   ├── server.py                # web UI fallback without cargo
 │   ├── predict_sleep.py         # per-profile LinUCB (ambient-sleep port)
 │   ├── habit_suggest.py         # weekday/hour profile suggestion
 │   ├── wake_paused.py           # Python fallback + launcher for the wake watcher
@@ -111,6 +111,7 @@ The app patches the [Focused Window](https://github.com/flexagoon/focused-window
 │   ├── templates/
 │   └── static/                  # favicons = web brand glyph
 ├── wake-paused/                 # Rust Dash/focus wake for paused profiles (GNOME)
+├── gui-server/                  # Rust web UI server (same API as gui/server.py)
 ├── fontconfig/
 ├── Dockerfile
 ├── LICENSE
