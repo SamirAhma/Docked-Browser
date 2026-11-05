@@ -8,6 +8,14 @@ the frozen window. This watcher polls the Focused Window helper: when the
 focused class is ``docked-browser-<profile>`` and that container is paused,
 it runs ``bin/docked-browser activate <profile>``.
 
+Switching workspaces by keyboard (Ctrl+Super+arrow), swipe, or overview
+thumbnail also focuses that workspace's top window. The helper reports
+``bare_switch_age_ms`` for those switches only; focus that lands within
+WORKSPACE_SWITCH_S of one does not wake. A Dash/dock click or Alt+Tab onto a
+window on another workspace is not a bare switch, so it still wakes. Before
+the patched helper loads (next login) the field is missing and every focus
+enter wakes.
+
 Started from the GUI server, tray, predict-sleep daemon, and on pause.
 """
 
@@ -35,6 +43,8 @@ CLASS_RE = re.compile(r"docked-browser-([A-Za-z0-9_-]{1,64})", re.I)
 
 POLL_S = 0.35
 WAKE_GAP_S = 2.0
+# Focus that lands this soon after a bare workspace switch came from the switch.
+WORKSPACE_SWITCH_S = 1.0
 PAUSED_CACHE_S = 1.0
 
 _last_wake: dict[str, float] = {}
@@ -85,8 +95,11 @@ def _parse_focused_payload(out: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def _focused_wm_class_from_shell() -> str:
-    """Focused WM class via the Focused Window D-Bus helper (GNOME / Wayland)."""
+def _focused_from_shell() -> tuple[str, float | None]:
+    """(focused WM class, seconds since the last bare workspace switch).
+
+    The age is None until the bare-switch patch is loaded, or before any switch.
+    """
     out = _run(
         [
             "gdbus",
@@ -102,9 +115,13 @@ def _focused_wm_class_from_shell() -> str:
         timeout=2.0,
     )
     info = _parse_focused_payload(out) if out else None
-    if not info or info.get("focus") is False:
-        return ""
-    return str(info.get("wm_class") or info.get("wm_class_instance") or "")
+    if not info:
+        return "", None
+    age_ms = info.get("bare_switch_age_ms")
+    age = age_ms / 1000.0 if isinstance(age_ms, (int, float)) and not isinstance(age_ms, bool) else None
+    if info.get("focus") is False:
+        return "", age
+    return str(info.get("wm_class") or info.get("wm_class_instance") or ""), age
 
 
 def _focused_wm_class_x11() -> str:
@@ -115,12 +132,12 @@ def _focused_wm_class_x11() -> str:
     return _run(["xprop", "-id", wid, "WM_CLASS"])
 
 
-def focused_docked_profile() -> str:
-    """Profile for the focused docked-browser window, or ''."""
-    wm = _focused_wm_class_from_shell()
-    if not wm:
+def focused_docked_profile() -> tuple[str, float | None]:
+    """(focused docked-browser profile or '', seconds since last bare switch)."""
+    wm, age = _focused_from_shell()
+    if not wm and age is None:
         wm = _focused_wm_class_x11()
-    return profile_from_wm_class(wm)
+    return profile_from_wm_class(wm), age
 
 
 def paused_profiles() -> frozenset[str]:
@@ -185,28 +202,43 @@ def request_wake(profile: str) -> None:
     )
 
 
-def tick(prev: str, suppressed: set[str]) -> str:
-    """One poll. Wake on focus *enter* into a paused profile; suppress pause-in-place."""
-    cur = focused_docked_profile()
+class FocusState:
+    """What the previous poll saw."""
+
+    def __init__(self) -> None:
+        self.profile = ""
+        self.suppressed: set[str] = set()
+
+
+def tick(state: FocusState) -> None:
+    """One poll. Wake on focus *enter* into a paused profile.
+
+    Not woken: a profile paused while focused (until focus leaves it), and one
+    that got focus because of a bare workspace switch (not a window pick).
+    """
+    cur, switch_age = focused_docked_profile()
+    prev = state.profile
     if prev and prev != cur:
-        suppressed.discard(prev)
+        state.suppressed.discard(prev)
     if cur and container_paused(cur):
         if cur != prev:
-            if cur not in suppressed:
+            if switch_age is not None and switch_age <= WORKSPACE_SWITCH_S:
+                _log(f"not waking {cur}: focused by workspace switch")
+                state.suppressed.add(cur)
+            elif cur not in state.suppressed:
                 request_wake(cur)
         else:
             # Still focused when it became / stayed paused — wait until focus leaves.
-            suppressed.add(cur)
-    return cur
+            state.suppressed.add(cur)
+    state.profile = cur
 
 
 def watch() -> None:
     _log("watching focus (GNOME Focused Window / Dash raise)")
-    prev = ""
-    suppressed: set[str] = set()
+    state = FocusState()
     while True:
         try:
-            prev = tick(prev, suppressed)
+            tick(state)
         except Exception as exc:  # noqa: BLE001 — one poll must not stop the watcher
             _log(f"tick: {exc}")
         time.sleep(POLL_S)

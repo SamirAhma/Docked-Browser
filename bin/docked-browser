@@ -287,6 +287,8 @@ PY
   ensure_activate_class_helper
   ensure_dash_hide_helper
   ensure_open_workspace_helper
+  ensure_workspace_index_helper
+  ensure_bare_switch_helper
 }
 
 ensure_activate_class_helper() {
@@ -614,6 +616,112 @@ if text.count(old_js) != 1:
     raise SystemExit("Focused Window helper disable() anchor is not unique")
 text = text.replace(old_schema, new_schema, 1)
 text = text.replace(old_js, new_js, 1)
+path.write_text(text, encoding="utf-8")
+PY
+}
+
+# Get() also reports the active workspace index, even with nothing focused.
+# gui/wake_paused.py uses it to tell a Super+arrow workspace switch (GNOME
+# focuses that workspace's top window) from a real click on a paused window.
+ensure_workspace_index_helper() {
+  [[ -f "$FOCUS_HELPER" ]] || return 0
+  if grep -q 'docked-browser-workspace-index' "$FOCUS_HELPER"; then
+    return 0
+  fi
+  python3 - "$FOCUS_HELPER" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+old_field = """        in_current_workspace: focusedWindow.meta_window.located_on_workspace(
+          workspaceManager.get_active_workspace()
+        ),
+"""
+new_field = old_field + """        // docked-browser-workspace-index
+        workspace_index: workspaceManager.get_active_workspace_index(),
+"""
+old_empty = '''    } else {
+      return "{}";
+    }'''
+new_empty = '''    } else {
+      return JSON.stringify({
+        focus: false,
+        workspace_index: workspaceManager.get_active_workspace_index(),
+      });
+    }'''
+if text.count(old_field) != 1 or text.count(old_empty) != 1:
+    raise SystemExit("Focused Window helper Get() has an unexpected layout")
+text = text.replace(old_field, new_field, 1).replace(old_empty, new_empty, 1)
+path.write_text(text, encoding="utf-8")
+PY
+}
+
+# Get() reports bare_switch_age_ms: ms since a workspace was switched to
+# without picking a window (Ctrl+Super+arrow, swipe, overview thumbnail —
+# Meta.Workspace.activate). A Dash/dock click or Alt+Tab onto a window on
+# another workspace goes through activate_with_focus and is not counted, so
+# gui/wake_paused.py still wakes that paused profile.
+ensure_bare_switch_helper() {
+  [[ -f "$FOCUS_HELPER" ]] || return 0
+  if grep -q 'docked-browser-bare-switch' "$FOCUS_HELPER"; then
+    return 0
+  fi
+  grep -q 'docked-browser-workspace-index' "$FOCUS_HELPER" || return 0
+  python3 - "$FOCUS_HELPER" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+old_import = "import Shell from 'gi://Shell';\n"
+if "from 'gi://Meta'" not in text:
+    if old_import not in text:
+        raise SystemExit("Focused Window helper has no Shell import")
+    text = text.replace(old_import, old_import + "import Meta from 'gi://Meta';\n", 1)
+old_class = "export default class FocusedWindowDbus extends Extension {\n"
+helper = """// docked-browser-bare-switch: when a workspace was last switched to without
+// a chosen window (keyboard, swipe, overview). Window activation is not counted.
+let dockedBareSwitchUs = null;
+let dockedOriginalWsActivate = null;
+
+function dockedInstallBareSwitch() {
+  if (dockedOriginalWsActivate)
+    return;
+  dockedOriginalWsActivate = Meta.Workspace.prototype.activate;
+  Meta.Workspace.prototype.activate = function (...args) {
+    dockedBareSwitchUs = GLib.get_monotonic_time();
+    return dockedOriginalWsActivate.apply(this, args);
+  };
+}
+
+function dockedClearBareSwitch() {
+  if (dockedOriginalWsActivate) {
+    Meta.Workspace.prototype.activate = dockedOriginalWsActivate;
+    dockedOriginalWsActivate = null;
+  }
+}
+
+function dockedBareSwitchAgeMs() {
+  if (dockedBareSwitchUs === null)
+    return null;
+  return Math.floor((GLib.get_monotonic_time() - dockedBareSwitchUs) / 1000);
+}
+
+"""
+old_field = """        // docked-browser-workspace-index
+        workspace_index: workspaceManager.get_active_workspace_index(),
+"""
+new_field = old_field + "        bare_switch_age_ms: dockedBareSwitchAgeMs(),\n"
+old_empty = """        focus: false,
+        workspace_index: workspaceManager.get_active_workspace_index(),
+"""
+new_empty = old_empty + "        bare_switch_age_ms: dockedBareSwitchAgeMs(),\n"
+old_enable = "  enable() {\n"
+old_disable = "  disable() {\n"
+for old in (old_class, old_field, old_empty, old_enable, old_disable):
+    if text.count(old) != 1:
+        raise SystemExit("Focused Window helper has an unexpected layout")
+text = text.replace(old_class, helper + old_class, 1)
+text = text.replace(old_field, new_field, 1).replace(old_empty, new_empty, 1)
+text = text.replace(old_enable, old_enable + "    dockedInstallBareSwitch();\n", 1)
+text = text.replace(old_disable, old_disable + "    dockedClearBareSwitch();\n", 1)
 path.write_text(text, encoding="utf-8")
 PY
 }
@@ -1732,19 +1840,48 @@ path.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
 PY
 }
 
+# Debian libgbm only scans /usr/lib/x86_64-linux-gnu/gbm. The NVIDIA
+# Container Toolkit on some hosts (Fedora) mounts nvidia-drm_gbm.so under
+# another directory, recorded in the CDI spec. Chrome on Wayland then fails
+# to allocate buffers and chrome://gpu falls back to software for everything.
+# Prints that directory when it is not already Debian's search path.
+nvidia_gbm_backend_dir() {
+  local spec line dir
+  for spec in /run/cdi/nvidia.yaml /etc/cdi/nvidia.yaml; do
+    [[ -f "$spec" ]] || continue
+    line="$(grep -oE '/usr/[^[:space:]]+/nvidia-drm_gbm\.so' "$spec" | head -1 || true)"
+    [[ -n "$line" ]] || continue
+    dir="${line%/*}"
+    if [[ "$dir" != "/usr/lib/x86_64-linux-gnu/gbm" ]]; then
+      printf '%s' "$dir"
+      return 0
+    fi
+    return 1
+  done
+  if [[ -e /usr/lib64/gbm/nvidia-drm_gbm.so && ! -e /usr/lib/x86_64-linux-gnu/gbm/nvidia-drm_gbm.so ]]; then
+    printf '%s' /usr/lib64/gbm
+    return 0
+  fi
+  return 1
+}
+
 # --- GPU: prefer NVIDIA Container Toolkit; else /dev/dri only ----------------
 append_nvidia_gpu_args() {
   # Device nodes (harmless if toolkit also mounts them)
-  local d
+  local d gbm
   for d in /dev/nvidia0 /dev/nvidiactl /dev/nvidia-modeset /dev/nvidia-uvm /dev/nvidia-uvm-tools; do
     [[ -e "$d" ]] && run_args+=(--device "$d")
   done
 
-  if docker info 2>/dev/null | grep -qiE 'Runtimes:.*nvidia|[[:space:]]nvidia'; then
+  if [[ -e /dev/nvidiactl ]] && docker info 2>/dev/null | grep -qiE 'Runtimes:.*nvidia|[[:space:]]nvidia'; then
     echo "GPU: Docker NVIDIA runtime (--gpus all)"
     run_args+=(--gpus all)
     run_args+=(-e NVIDIA_VISIBLE_DEVICES=all)
     run_args+=(-e NVIDIA_DRIVER_CAPABILITIES=all)
+    if gbm="$(nvidia_gbm_backend_dir)"; then
+      echo "GPU: GBM backends ${gbm}"
+      run_args+=(-e "GBM_BACKENDS_PATH=${gbm}")
+    fi
     return
   fi
 
@@ -1797,6 +1934,7 @@ cmd_run() {
     --shm-size=2g
     --security-opt seccomp=unconfined
     --security-opt apparmor=unconfined
+    --security-opt label=disable
     -e "DISPLAY=$DISPLAY"
     -e "HOME=/home/chromeuser"
     -e "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
@@ -2034,7 +2172,7 @@ cmd_offload() {
   # fails with EAGAIN when the kernel frees less than asked (swap full);
   # what it did free still counts.
   docker run --rm --network none --user 0 --entrypoint sh \
-    --security-opt apparmor=unconfined -v "$dir:/target" "$IMAGE_NAME" \
+    --security-opt apparmor=unconfined --security-opt label=disable -v "$dir:/target" "$IMAGE_NAME" \
     -c 'echo "$1 swappiness=200" > /target/memory.reclaim' _ "$before" 2>/dev/null || true
   mkdir -p "$PAUSED_AT_DIR"
   touch "$PAUSED_AT_DIR/$PROFILE_NAME.offloaded"
