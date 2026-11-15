@@ -7,6 +7,9 @@ import subprocess
 import sys
 import threading
 
+# Pin the local Docker daemon; another tool may have switched the global context.
+os.environ["DOCKER_CONTEXT"] = "default"
+
 import gi
 
 gi.require_version("Gtk", "3.0")

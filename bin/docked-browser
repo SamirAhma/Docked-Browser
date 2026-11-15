@@ -19,6 +19,10 @@
 # =============================================================================
 set -euo pipefail
 
+# Other tools (e.g. Kiri) run `docker context use <theirs>`; our image and
+# chrome-* containers live on the local daemon, so never follow that switch.
+export DOCKER_CONTEXT=default
+
 # --- Paths & naming ----------------------------------------------------------
 IMAGE_NAME="local-docked-browser"
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$PWD/docked-browser")"

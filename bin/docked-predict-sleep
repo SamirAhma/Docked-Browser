@@ -11,6 +11,9 @@ import signal
 import sys
 import time
 
+# Pin the local Docker daemon; another tool may have switched the global context.
+os.environ["DOCKER_CONTEXT"] = "default"
+
 GUI_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "gui")
 sys.path.insert(0, GUI_DIR)
 

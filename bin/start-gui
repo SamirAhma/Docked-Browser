@@ -7,6 +7,8 @@ BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$BIN_DIR/.." && pwd)"
 GUI_DIR="$ROOT_DIR/gui"
 PORT="${DOCKED_BROWSER_PORT:-${COCKPIT_PORT:-8787}}"
+# Server and daemons must hit the local daemon even if another tool switched context.
+export DOCKER_CONTEXT=default
 
 if curl -sf -o /dev/null "http://127.0.0.1:${PORT}/" 2>/dev/null; then
   echo "Docked Browser already running → http://127.0.0.1:${PORT}"
