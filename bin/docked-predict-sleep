@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Start the scheduler or dispatch its per-poll worker.
+# Start the Rust daemon or the legacy Python fallback.
 set -euo pipefail
 root="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 rust="$root/gui-server/target/release/docked-browser-gui"
 export DOCKER_CONTEXT=default
 
-if [[ "${1:-}" != --poll-worker && -x "$rust" && -z "${DOCKED_BROWSER_PYTHON_GUI:-}" ]]; then
+if [[ -x "$rust" && -z "${DOCKED_BROWSER_PYTHON_GUI:-}" ]]; then
   export DOCKED_BROWSER_ROOT="$root"
   exec "$rust" predict-daemon
 fi

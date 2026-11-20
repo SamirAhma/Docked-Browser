@@ -31,6 +31,8 @@ mod sleep_sensors;
 mod scheduler;
 mod tray;
 mod modal;
+mod notifications;
+mod sleep_poll;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
@@ -659,9 +661,15 @@ fn panel_for_now(resumed: &HashSet<String>) -> Value {
     let myt = now_f64() as i64 + MYT_OFFSET_SECS;
     let days = myt.div_euclid(86400);
     let hour = myt.rem_euclid(86400) / 3600;
+    let data = read_json(&paths().state_dir.join("habit.json")).unwrap_or(Value::Null);
+    slot_winner(&data, days, hour)
+        .filter(|winner| !resumed.contains(winner))
+        .map_or(Value::Null, Value::String)
+}
+
+fn slot_winner(data: &Value, days: i64, hour: i64) -> Option<String> {
     let slot = format!("{}-{hour:02}", iso_weekday(days));
-    let data = read_json(&paths().state_dir.join("habit.json"));
-    let weeks = data.as_ref().and_then(|d| d.get("weeks")).and_then(Value::as_object);
+    let weeks = data.get("weeks").and_then(Value::as_object);
     let mut keys: Vec<String> = vec![];
     for i in 0..WINDOW_WEEKS {
         let k = week_key(days - 7 * i);
@@ -685,12 +693,12 @@ fn panel_for_now(resumed: &HashSet<String>) -> Value {
             }
         }
     }
-    let Some(best) = counts.iter().map(|c| c.1).max() else { return Value::Null };
+    let best = counts.iter().map(|c| c.1).max()?;
     let winners: Vec<&String> = counts.iter().filter(|c| c.1 == best).map(|c| &c.0).collect();
-    if best < MIN_WEEKS || winners.len() != 1 || resumed.contains(winners[0]) {
-        return Value::Null;
+    if best < MIN_WEEKS || winners.len() != 1 {
+        return None;
     }
-    json!(winners[0])
+    Some(winners[0].clone())
 }
 
 // --- Chrome update (gui/chrome_update.py) ------------------------------------
@@ -777,6 +785,19 @@ fn merge_chrome_probe(
     state
 }
 
+fn with_chrome_update_state(
+    edit: impl FnOnce(&Path, Map<String, Value>) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let dir = &paths().state_dir;
+    fs::create_dir_all(dir)?;
+    let lock = fs::OpenOptions::new().create(true).truncate(false).read(true).write(true)
+        .open(dir.join("chrome-update-check.lock"))?;
+    lock.lock()?;
+    let path = dir.join("chrome-update-check.json");
+    let state = read_json(&path).and_then(|value| value.as_object().cloned()).unwrap_or_default();
+    edit(&path, state)
+}
+
 fn chrome_check(force: bool) -> Value {
     let _guard = UPDATE_CHECK.lock().unwrap_or_else(|e| e.into_inner());
     let path = paths().state_dir.join("chrome-update-check.json");
@@ -795,18 +816,20 @@ fn chrome_check(force: bool) -> Value {
             utc.tm_year + 1900, utc.tm_mon + 1, utc.tm_mday, utc.tm_hour, utc.tm_min, utc.tm_sec
         )));
     }
-    let state = Value::Object(state);
-    let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    let save = || -> std::io::Result<()> {
-        fs::create_dir_all(&paths().state_dir)?;
-        fs::write(&temp, serde_json::to_string_pretty(&state)? + "\n")?;
-        fs::rename(&temp, &path)
-    };
-    if let Err(error) = save() {
-        let _ = fs::remove_file(&temp);
+    let saved = with_chrome_update_state(|path, current| {
+        if current.get("last_checked_at").and_then(py_float).is_some_and(|checked| checked > now) {
+            state = current;
+            return Ok(());
+        }
+        if let Some(notified) = current.get("last_notified_at") {
+            state.insert("last_notified_at".into(), notified.clone());
+        }
+        sleep_state::persist(path, &Value::Object(state.clone()))
+    });
+    if let Err(error) = saved {
         eprintln!("Cannot save Chrome update state: {error}");
     }
-    state
+    Value::Object(state)
 }
 
 fn update_status_payload() -> Value {

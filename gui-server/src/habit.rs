@@ -63,10 +63,9 @@ fn record(weeks: &mut Map<String, Value>, profile: &str, day: i64, hour: i64) ->
     true
 }
 
-pub(super) fn log_use(profile: &str) -> io::Result<bool> {
-    if !profile_ok(profile) {
-        return Ok(false);
-    }
+fn update<T>(
+    edit: impl FnOnce(&mut Map<String, Value>, &mut Map<String, Value>, i64, i64) -> T,
+) -> io::Result<T> {
     let dir = &paths().state_dir;
     fs::create_dir_all(dir)?;
     let lock = fs::OpenOptions::new()
@@ -89,17 +88,70 @@ pub(super) fn log_use(profile: &str) -> io::Result<bool> {
     let myt = now_f64() as i64 + MYT_OFFSET_SECS;
     let day = myt.div_euclid(86400);
     let hour = myt.rem_euclid(86400) / 3600;
-    let added = record(&mut weeks, profile, day, hour);
+    let result = edit(&mut weeks, &mut suggested, day, hour);
     let monday = day - iso_weekday(day) + 1;
     weeks.retain(|key, _| parse_week(key).is_some_and(|start| start >= monday - 49));
     suggested.retain(|key, _| parse_day(key).is_some_and(|date| date >= day - 56));
-    if added || weeks != object("weeks") || suggested != object("suggested") {
+    if weeks != object("weeks") || suggested != object("suggested") {
         let temp = dir.join("habit.json.tmp");
         let saved = json!({"weeks": weeks, "suggested": suggested});
         fs::write(&temp, serde_json::to_string_pretty(&saved)? + "\n")?;
         fs::rename(temp, path)?;
     }
-    Ok(added)
+    Ok(result)
+}
+
+pub(super) fn log_use(profile: &str) -> io::Result<bool> {
+    if !profile_ok(profile) {
+        return Ok(false);
+    }
+    update(|weeks, _, day, hour| record(weeks, profile, day, hour))
+}
+
+fn date_key(day: i64) -> String {
+    let time = day * 86400;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::gmtime_r(&time, &mut tm) };
+    format!(
+        "{:04}-{:02}-{:02}",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday
+    )
+}
+
+pub(super) fn offer(focused: &str) -> io::Result<Option<(String, String, String)>> {
+    update(|weeks, suggested, day, hour| {
+        let week_data = json!({"weeks": weeks});
+        let profile = super::slot_winner(&week_data, day, hour)?;
+        if profile.eq_ignore_ascii_case(focused) {
+            return None;
+        }
+        let date = date_key(day);
+        let slot = format!("{}-{hour:02}", iso_weekday(day));
+        let slots = suggested.entry(date.clone()).or_insert_with(|| json!([]));
+        if !slots.is_array() {
+            *slots = json!([]);
+        }
+        let slots = slots.as_array_mut()?;
+        if slots.iter().any(|key| key == &slot) {
+            return None;
+        }
+        slots.push(json!(slot));
+        slots.sort_by(|a, b| a.as_str().cmp(&b.as_str()));
+        Some((profile, date, slot))
+    })
+}
+
+pub(super) fn clear_offer(date: &str, slot: &str) -> io::Result<()> {
+    update(|_, suggested, _, _| {
+        if let Some(slots) = suggested.get_mut(date).and_then(Value::as_array_mut) {
+            slots.retain(|key| key != slot);
+            if slots.is_empty() {
+                suggested.remove(date);
+            }
+        }
+    })
 }
 
 #[cfg(test)]

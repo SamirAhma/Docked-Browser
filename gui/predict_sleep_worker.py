@@ -17,7 +17,7 @@ os.environ["DOCKER_CONTEXT"] = "default"
 GUI_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, GUI_DIR)
 
-from predict_sleep import POLL_INTERVAL_S, ensure_daemon, poll_worker  # noqa: E402
+from predict_sleep import POLL_INTERVAL_S, ensure_daemon  # noqa: E402
 from wake_paused import ensure_watcher  # noqa: E402
 
 
@@ -29,10 +29,6 @@ def main() -> int:
         sock = os.path.join(runtime, "wayland-0")
         if os.path.exists(sock):
             os.environ["WAYLAND_DISPLAY"] = "wayland-0"
-
-    if sys.argv[1:] == ["--poll-worker"]:
-        poll_worker()
-        return 0
 
     if not ensure_daemon():
         print("predict-sleep already running elsewhere", flush=True)

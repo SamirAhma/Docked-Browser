@@ -149,7 +149,7 @@ Naming:
 
 - **Pause** (`docker pause`): frozen in **RAM**, almost no CPU — does **not** free memory at first.
 - **Swap offload**: a profile paused for **2 hours** has its memory pushed to swap (`docked-browser offload <name>`, run by the predict-sleep daemon). Resumed before 2h, it never left RAM. Resumed after, Chrome reads its pages back from disk, so it lags for a few seconds. Change the minutes under **Help & about → Move to disk** (`0` = never; saved as `offload_after_min` in `prefs.json`). The **Move all paused to disk** button there (`docked-browser offload-all`) does it now for every paused profile. Swap must be large enough to hold the paused profiles; check with `swapon --show`.
-- **Predict sleep**: unused running profiles are paused automatically (60s AI floor, 5 min hard breaker, 20s warning). Resume / Open always wake the **exact** named profile.
+- **Predict sleep**: the Rust daemon pauses unused running profiles (60s AI floor, 5 min hard breaker, 20s warning). Resume / Open always wake the **exact** named profile.
 - **Usual time**: the same daemon can notify you to open the profile you used in this weekday and hour in at least 3 of the last 4 weeks. Click runs `activate` for that profile. One offer per slot per Malaysia day; the notification stays up about five minutes. Missing it does not count as use. The profile panel shows a larger For now row for the current slot's winner when that profile is paused or not open; the profile remains in the list; a running profile is not featured.
 - **Stop / Close**: removes the container; profile data on disk is kept.
 - **Delete**: stop + erase that profile’s data directory and custom icon (permanent).
@@ -158,7 +158,7 @@ Naming:
 
 - Ubuntu 26.04 LTS + GNOME on Wayland (tested)
 - Docker
-- Python 3 + Pillow
+- Python 3 + Pillow for legacy fallbacks and the remaining Bash-invoked helpers.
 - Optional for the desktop controls: GTK 3 and Ayatana AppIndicator. After `docked-browser build`, the tray and focus picker use the Rust GTK interfaces.
 - Optional: NVIDIA Container Toolkit
 - Focused Window Shell extension (`focused-window-dbus@flexagoon.com`), patched in place by `bin/docked-browser` for raise / Dash hide / workspace switch

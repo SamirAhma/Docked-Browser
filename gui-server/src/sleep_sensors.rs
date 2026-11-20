@@ -151,3 +151,70 @@ mod tests {
         assert_eq!(shell_focus("('{\"pid\":\"unknown\"}',)"), None);
     }
 }
+
+pub(super) struct FocusProbe {
+    container: String,
+    cached: Option<(std::time::Instant, Vec<i64>)>,
+}
+
+impl FocusProbe {
+    pub(super) fn new(profile: &str) -> Self {
+        Self {
+            container: format!("chrome-{profile}"),
+            cached: None,
+        }
+    }
+
+    pub(super) fn focused(&mut self) -> bool {
+        let Some((pid, class)) = focused_window() else {
+            return false;
+        };
+        if !browser_window(pid, &class) {
+            return false;
+        }
+        if self
+            .cached
+            .as_ref()
+            .is_none_or(|(time, _)| time.elapsed() >= std::time::Duration::from_secs(2))
+        {
+            let result =
+                output(&["docker", "top", &self.container, "-eo", "pid"], 8).unwrap_or_default();
+            self.cached = Some((
+                std::time::Instant::now(),
+                result
+                    .lines()
+                    .filter_map(|line| line.trim().parse().ok())
+                    .collect(),
+            ));
+        }
+        self.cached
+            .as_ref()
+            .is_some_and(|(_, pids)| pids.contains(&pid))
+    }
+}
+
+fn browser_window(pid: i64, class: &str) -> bool {
+    pid > 0
+        && (class.is_empty()
+            || ["docked-browser", "chrome", "chromium"]
+                .iter()
+                .any(|name| class.contains(name)))
+}
+
+pub(super) fn focused_class_profile() -> String {
+    let Some((_, class)) = focused_window() else {
+        return String::new();
+    };
+    let Some((_, profile)) = class.split_once("docked-browser-") else {
+        return String::new();
+    };
+    let profile = profile
+        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_' && ch != '-')
+        .next()
+        .unwrap_or_default();
+    if profile_ok(profile) {
+        profile.into()
+    } else {
+        String::new()
+    }
+}

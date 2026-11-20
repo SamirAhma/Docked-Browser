@@ -17,7 +17,7 @@ fn state_object(value: Option<&Value>) -> Map<String, Value> {
         .unwrap_or_default()
 }
 
-fn persist(path: &Path, data: &Value) -> io::Result<()> {
+pub(super) fn persist(path: &Path, data: &Value) -> io::Result<()> {
     let temp = path.with_extension(format!("json.rust.{}.tmp", std::process::id()));
     let save = || {
         fs::write(&temp, serde_json::to_string_pretty(data)? + "\n")?;
@@ -56,7 +56,9 @@ pub(super) fn save_checkpoint(name: &str, payload: &Value) -> io::Result<()> {
     persist(&dir.join(name), payload)
 }
 
-fn mutate(edit: impl FnOnce(&mut Map<String, Value>) -> io::Result<()>) -> io::Result<()> {
+pub(super) fn mutate(
+    edit: impl FnOnce(&mut Map<String, Value>) -> io::Result<()>,
+) -> io::Result<()> {
     let dir = &paths().state_dir;
     fs::create_dir_all(dir)?;
     let lock = fs::OpenOptions::new()
@@ -247,6 +249,136 @@ fn default_model() -> (Arm, Arm) {
     x[10] = 1.0;
     pause.observe(&x, 0.6);
     (keep, pause)
+}
+
+fn invert(a: &[f64]) -> Option<Vec<f64>> {
+    let mut augmented = [[0.0; DIM * 2]; DIM];
+    for i in 0..DIM {
+        augmented[i][..DIM].copy_from_slice(&a[i * DIM..(i + 1) * DIM]);
+        augmented[i][DIM + i] = 1.0;
+    }
+    for column in 0..DIM {
+        let pivot = (column..DIM).max_by(|&a, &b| {
+            augmented[a][column]
+                .abs()
+                .total_cmp(&augmented[b][column].abs())
+        })?;
+        if augmented[pivot][column].abs() < 1e-12 {
+            return None;
+        }
+        augmented.swap(column, pivot);
+        let divisor = augmented[column][column];
+        for x in &mut augmented[column] {
+            *x /= divisor;
+        }
+        let row = augmented[column];
+        for (index, target) in augmented.iter_mut().enumerate() {
+            if index == column {
+                continue;
+            }
+            let factor = target[column];
+            for (value, pivot) in target.iter_mut().zip(row) {
+                *value -= factor * pivot;
+            }
+        }
+    }
+    Some(
+        augmented
+            .iter()
+            .flat_map(|row| row[DIM..].iter().copied())
+            .collect(),
+    )
+}
+
+pub(super) struct Model {
+    arms: [Arm; 2],
+    inverse: [Vec<f64>; 2],
+    alpha: f64,
+    pub decisions: u64,
+    pub updates: u64,
+    observations: Vec<(usize, Features, f64)>,
+}
+
+impl Model {
+    pub(super) fn load(path: &Path) -> Self {
+        let raw = read_json(path).unwrap_or(Value::Null);
+        let valid = (|| {
+            if raw["layout"].as_i64()? != FEATURE_LAYOUT || raw["dim"].as_i64()? != FEATURE_DIM {
+                return None;
+            }
+            Some((
+                Arm::from_json(&raw["keep"])?,
+                Arm::from_json(&raw["pause"])?,
+            ))
+        })();
+        let (keep, pause) = valid.unwrap_or_else(default_model);
+        let arms = [keep, pause];
+        let inverse =
+            std::array::from_fn(|i| invert(&arms[i].a).unwrap_or_else(|| Arm::identity().a));
+        Self {
+            arms,
+            inverse,
+            alpha: raw["alpha"].as_f64().unwrap_or(ALPHA),
+            decisions: raw["decisions"].as_u64().unwrap_or_default(),
+            updates: raw["updates"].as_u64().unwrap_or_default(),
+            observations: Vec::new(),
+        }
+    }
+
+    pub(super) fn observe(
+        &mut self,
+        profile: &str,
+        context: &Value,
+        now: f64,
+        pause: bool,
+        reward: f64,
+    ) {
+        let index = usize::from(pause);
+        let x = features(context, profile, now);
+        self.arms[index].observe(&x, reward);
+        let inv = &mut self.inverse[index];
+        let ax = matrix_vector(inv, &x);
+        let denom = 1.0 + dot(&x, &ax);
+        if denom.abs() >= 1e-12 && denom.is_finite() {
+            for (i, row) in inv.chunks_exact_mut(DIM).enumerate() {
+                for (j, value) in row.iter_mut().enumerate() {
+                    *value -= ax[i] * ax[j] / denom;
+                }
+            }
+        } else {
+            *inv = invert(&self.arms[index].a).unwrap_or_else(|| Arm::identity().a);
+        }
+        self.updates += 1;
+        self.observations.push((index, x, reward));
+    }
+
+    pub(super) fn select(&mut self, profile: &str, context: &Value, now: f64) -> Option<Value> {
+        self.decisions += 1;
+        select_policy(&json!({
+            "profile": profile, "context": context, "now": now, "alpha": self.alpha,
+            "keep": {"a_inv": self.inverse[0], "b": self.arms[0].b},
+            "pause": {"a_inv": self.inverse[1], "b": self.arms[1].b},
+        }))
+    }
+
+    pub(super) fn save_tick(&self, path: &Path, decisions: u64) -> io::Result<()> {
+        // Replay this tick's observations into the latest checkpoint while the
+        // profile state lock is held, preserving concurrent manual wake credit.
+        let mut current = Self::load(path);
+        for (arm, x, reward) in &self.observations {
+            current.arms[*arm].observe(x, *reward);
+            current.updates += 1;
+        }
+        current.decisions += self.decisions.saturating_sub(decisions);
+        persist(
+            path,
+            &json!({
+                "layout": FEATURE_LAYOUT, "dim": FEATURE_DIM, "alpha": current.alpha,
+                "decisions": current.decisions, "updates": current.updates,
+                "keep": current.arms[0].json(), "pause": current.arms[1].json(),
+            }),
+        )
+    }
 }
 
 fn credit_forced_wake(path: &Path, pending: &Value, profile: &str, now: f64) -> io::Result<()> {

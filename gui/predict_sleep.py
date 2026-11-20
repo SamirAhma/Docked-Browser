@@ -1356,18 +1356,6 @@ def poll_once(bandit: LinUcb) -> None:
         _log(f"offload error: {exc}")
 
 
-def poll_worker() -> None:
-    """Run one poll for each command received from the Rust scheduler."""
-    import sys
-
-    bandit = initialize_bandit()
-    for command in sys.stdin:
-        if command.rstrip("\n") != "tick":
-            raise SystemExit("Unexpected predict-sleep worker command")
-        poll_once(bandit)
-        print("docked-predict-sleep: tick complete", flush=True)
-
-
 _daemon: PredictSleepDaemon | None = None
 
 
