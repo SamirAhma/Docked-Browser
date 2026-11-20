@@ -1,0 +1,84 @@
+window, window.background { background-color: #f5f5f7; color: #1d1d1f; }
+headerbar {
+  background-color: #f5f5f7;
+  background-image: none;
+  color: #1d1d1f;
+  border-bottom-color: rgba(0, 0, 0, 0.08);
+  box-shadow: none;
+  min-height: 44px;
+  padding: 4px 8px;
+}
+headerbar .title { color: #1d1d1f; font-weight: 700; font-size: 13px; }
+headerbar button, headerbar button.titlebutton {
+  background-image: none;
+  background-color: #e5e5ea;
+  color: #1d1d1f;
+  border: none;
+  box-shadow: none;
+  border-radius: 980px;
+  min-height: 28px;
+  min-width: 28px;
+  padding: 4px 10px;
+}
+headerbar button:hover, headerbar button.titlebutton:hover {
+  background-image: none;
+  background-color: #d8d8dc;
+}
+headerbar button label, headerbar button image { color: #1d1d1f; }
+.section-title { font-size: 22px; font-weight: 700; letter-spacing: -0.4px; color: #1d1d1f; }
+.hint { color: #86868b; font-size: 12.5px; }
+list { background-color: transparent; border: none; }
+row {
+  background-color: #ffffff;
+  border-radius: 14px;
+  margin: 5px 0;
+  padding: 2px 4px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+}
+row:hover { background-color: #fafafa; }
+row.empty-row, row.empty-row:hover {
+  background-color: transparent;
+  border: none;
+  box-shadow: none;
+}
+.profile-name { font-size: 14px; font-weight: 700; color: #1d1d1f; }
+.profile-state { font-size: 12px; color: #86868b; }
+button {
+  border-radius: 980px;
+  padding: 8px 14px;
+  font-weight: 600;
+  border: none;
+  box-shadow: none;
+  outline: none;
+  background-image: none;
+  background-color: #e5e5ea;
+  color: #1d1d1f;
+}
+button label { color: #1d1d1f; }
+button:hover, button:active, button:checked {
+  background-image: none;
+  background-color: #d8d8dc;
+  color: #1d1d1f;
+}
+button:hover label, button:active label, button:checked label { color: #1d1d1f; }
+button.suggested-action {
+  background-image: none;
+  background-color: #0071e3;
+  color: #ffffff;
+}
+button.suggested-action label { color: #ffffff; }
+button.suggested-action:hover, button.suggested-action:active {
+  background-image: none;
+  background-color: #0077ed;
+  color: #ffffff;
+}
+button.suggested-action:hover label, button.suggested-action:active label { color: #ffffff; }
+.empty-title { font-size: 15px; font-weight: 700; color: #1d1d1f; }
+.empty-body { font-size: 13px; color: #86868b; }
+.update-box {
+  background-color: #eef7ff;
+  border: 1px solid rgba(0, 113, 227, 0.2);
+  border-radius: 12px;
+  padding: 8px 12px;
+}
+.update-box label { color: #005bb5; font-size: 13px; }

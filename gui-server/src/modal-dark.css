@@ -1,0 +1,84 @@
+window, window.background { background-color: #1c1c1e; color: #f5f5f7; }
+headerbar {
+  background-color: #1c1c1e;
+  background-image: none;
+  color: #f5f5f7;
+  border-bottom-color: rgba(255, 255, 255, 0.12);
+  box-shadow: none;
+  min-height: 44px;
+  padding: 4px 8px;
+}
+headerbar .title { color: #f5f5f7; font-weight: 700; font-size: 13px; }
+headerbar button, headerbar button.titlebutton {
+  background-image: none;
+  background-color: #3a3a3c;
+  color: #f5f5f7;
+  border: none;
+  box-shadow: none;
+  border-radius: 980px;
+  min-height: 28px;
+  min-width: 28px;
+  padding: 4px 10px;
+}
+headerbar button:hover, headerbar button.titlebutton:hover {
+  background-image: none;
+  background-color: #48484a;
+}
+headerbar button label, headerbar button image { color: #f5f5f7; }
+.section-title { font-size: 22px; font-weight: 700; letter-spacing: -0.4px; color: #f5f5f7; }
+.hint { color: #98989d; font-size: 12.5px; }
+list { background-color: transparent; border: none; }
+row {
+  background-color: #2c2c2e;
+  border-radius: 14px;
+  margin: 5px 0;
+  padding: 2px 4px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+row:hover { background-color: #3a3a3c; }
+row.empty-row, row.empty-row:hover {
+  background-color: transparent;
+  border: none;
+  box-shadow: none;
+}
+.profile-name { font-size: 14px; font-weight: 700; color: #f5f5f7; }
+.profile-state { font-size: 12px; color: #98989d; }
+button {
+  border-radius: 980px;
+  padding: 8px 14px;
+  font-weight: 600;
+  border: none;
+  box-shadow: none;
+  outline: none;
+  background-image: none;
+  background-color: #3a3a3c;
+  color: #f5f5f7;
+}
+button label { color: #f5f5f7; }
+button:hover, button:active, button:checked {
+  background-image: none;
+  background-color: #48484a;
+  color: #f5f5f7;
+}
+button:hover label, button:active label, button:checked label { color: #f5f5f7; }
+button.suggested-action {
+  background-image: none;
+  background-color: #0a84ff;
+  color: #ffffff;
+}
+button.suggested-action label { color: #ffffff; }
+button.suggested-action:hover, button.suggested-action:active {
+  background-image: none;
+  background-color: #409cff;
+  color: #ffffff;
+}
+button.suggested-action:hover label, button.suggested-action:active label { color: #ffffff; }
+.empty-title { color: #f5f5f7; font-size: 15px; font-weight: 700; }
+.empty-body { color: #98989d; font-size: 13px; }
+.update-box {
+  background-color: #0c2d48;
+  border: 1px solid rgba(10, 132, 255, 0.3);
+  border-radius: 12px;
+  padding: 8px 12px;
+}
+.update-box label { color: #64b5f6; font-size: 13px; }
