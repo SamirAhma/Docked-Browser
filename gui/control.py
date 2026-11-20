@@ -19,7 +19,7 @@ PREFS_FILE = STATE_DIR / "prefs.json"
 LAUNCHER_ICON = ICON_DIR / "docked-browser.png"  # web UI / generic
 TRAY_ICON = ICON_DIR / "docked-browser-tray.png"
 MODAL_ICON = ICON_DIR / "docked-browser-modal.png"
-BRAND_ICONS_PY = Path(__file__).resolve().parent / "brand_icons.py"
+BRAND_STATIC = Path(__file__).resolve().parent / "static"
 
 THEMES = frozenset({"light", "dark", "system"})
 # offload_after_min: minutes paused before RAM goes to swap (0 = never).
@@ -297,21 +297,19 @@ def prefs_payload() -> dict:
 
 
 def ensure_brand_icons() -> None:
-    """Generate web/tray/modal brand PNGs if missing."""
-    needed = (LAUNCHER_ICON, TRAY_ICON, MODAL_ICON)
-    if all(p.is_file() for p in needed):
-        return
-    if not BRAND_ICONS_PY.is_file():
-        return
-    try:
-        subprocess.run(
-            ["python3", str(BRAND_ICONS_PY), "--icons-dir", str(ICON_DIR), "--no-static"],
-            check=False,
-            capture_output=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+    """Install the bundled web, tray, and modal icons when needed."""
+    for source, destination in (
+        ("brand-web.png", LAUNCHER_ICON),
+        ("brand-tray.png", TRAY_ICON),
+        ("brand-modal.png", MODAL_ICON),
+    ):
+        if destination.is_file():
+            continue
+        try:
+            ICON_DIR.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(BRAND_STATIC / source, destination)
+        except OSError:
+            pass
 
 
 def playing_tray_icon() -> Path:

@@ -17,13 +17,17 @@
 //! POST /api/chrome-update   → forced check
 //! ```
 //!
-//! Reads (polled by the page) are done here. Rare writes that other Python
-//! code also owns — `mark_used` (LinUCB + habit log), predict-sleep enable,
-//! the Chrome update probe, JPEG/WebP → PNG — run the existing Python
-//! function in a short-lived `python3`, so there is one implementation of
-//! that state. The predict-sleep daemon, which `server.py` ran as a thread,
+//! Reads and changes to the predict-sleep toggle are handled here.
+//! The predict-sleep daemon, which `server.py` ran as a thread,
 //! runs as a child (`bin/docked-predict-sleep`) when its lock is free; its
-//! log lines are kept for `/api/predict-sleep`.
+//! log lines are kept for `/api/predict-sleep`. Chrome update checks and icon
+//! uploads are handled here.
+
+mod habit;
+mod offload;
+mod profile_icon;
+mod sleep_state;
+mod scheduler;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
@@ -70,7 +74,6 @@ const ALLOWED_ACTIONS: &[&str] = &[
     "stop-all",
     "offload-all",
 ];
-const OPEN_ACTIONS: &[&str] = &["run", "activate", "resume"];
 const FLEET_ACTIONS: &[&str] = &["pause-all", "resume-all", "stop-all", "offload-all"];
 
 const STATIC_FILES: &[(&str, &str, &str)] = &[
@@ -302,27 +305,6 @@ fn simple_cmd(args: &[&str], timeout_s: u64) -> Option<Output> {
     run_capture(cmd, Duration::from_secs(timeout_s), None).ok()
 }
 
-/// Run a snippet against the existing Python modules in `gui/`.
-/// The snippet may print one JSON line last; it is returned parsed.
-fn py_call(code: &str, args: &[&str], timeout_s: u64) -> Option<Value> {
-    let p = paths();
-    let prelude = format!(
-        "import sys, json; sys.path.insert(0, {gui:?}); {code}",
-        gui = p.gui.to_string_lossy()
-    );
-    let mut cmd = Command::new("python3");
-    cmd.arg("-c").arg(prelude).args(args).current_dir(&p.gui).env_clear().envs(desktop_env());
-    let out = run_capture(cmd, Duration::from_secs(timeout_s), None).ok()?;
-    if !out.stderr.trim().is_empty() {
-        eprintln!("[py] {}", out.stderr.trim());
-    }
-    out.stdout.lines().rev().find(|l| !l.trim().is_empty()).and_then(|l| serde_json::from_str(l).ok())
-}
-
-fn mark_used(profile: &str) {
-    py_call("from predict_sleep import mark_used; mark_used(sys.argv[1])", &[profile], 30);
-}
-
 // --- bin/docked-browser --------------------------------------------------------
 fn result(ok: bool, output: impl Into<String>) -> Map<String, Value> {
     let mut m = Map::new();
@@ -357,11 +339,6 @@ fn run_cockpit(action: &str, profile: Option<&str>) -> Map<String, Value> {
         Err(RunError::Os(e)) => return result(false, e),
     };
     let ok = out.code == Some(0);
-    if ok && OPEN_ACTIONS.contains(&action) {
-        if let Some(prof) = profile {
-            mark_used(prof);
-        }
-    }
     let text = format!("{}{}", out.stdout, out.stderr);
     let text = text.trim();
     result(ok, if text.is_empty() { "(no output)" } else { text })
@@ -418,6 +395,53 @@ fn known_profiles(rows: &[Map<String, Value>]) -> Vec<String> {
     let mut v: Vec<String> = set.into_iter().collect();
     v.sort();
     v
+}
+
+fn seed_chrome_fonts(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    fn section<'a>(parent: &'a mut Map<String, Value>, key: &str) -> std::io::Result<&'a mut Map<String, Value>> {
+        parent.entry(key).or_insert_with(|| json!({})).as_object_mut().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Chrome preference {key} must be an object"))
+        })
+    }
+
+    let mut prefs = read_json(path).unwrap_or_else(|| json!({}));
+    let data = prefs.as_object_mut().ok_or("Chrome Preferences must be an object")?;
+    let webkit = section(data, "webkit")?;
+    section(webkit, "webprefs")?.insert("fonts".into(), json!({
+        "standard": {"Zyyy": "Inter"},
+        "sansserif": {"Zyyy": "Inter"},
+        "serif": {"Zyyy": "Noto Serif"},
+        "fixed": {"Zyyy": "JetBrains Mono"},
+    }));
+    section(data, "browser")?.entry("has_seen_welcome_page").or_insert(json!(true));
+    fs::write(path, serde_json::to_vec(&prefs)?)?;
+    Ok(())
+}
+
+fn cli_status() -> Value {
+    let rows = docker_chrome_status();
+    let active = fs::read_to_string(paths().state_dir.join("active-profile")).unwrap_or_default();
+    let active = active.trim();
+    let active = if profile_ok(active) { active } else { "" };
+    let mut names = known_profiles(&rows);
+    names.retain(|name| profile_ok(name));
+    names.sort_by_key(|name| name != active);
+    let profiles: Vec<_> = names.iter().map(|name| {
+        let state = rows.iter().find(|row| row_str(row, "profile") == name)
+            .map(|row| row_str(row, "state"))
+            .filter(|state| matches!(*state, "paused" | "running"))
+            .unwrap_or("stopped");
+        let installed = paths().state_dir.join("icons").join(format!("docked-browser-{name}.png"));
+        let custom = icon_path(name);
+        let icon = [installed, custom].into_iter().find(|path| path.is_file());
+        json!({
+            "profile": name,
+            "state": state,
+            "active": name == active,
+            "icon": icon.as_deref().and_then(Path::to_str).unwrap_or_default(),
+        })
+    }).collect();
+    json!({"active": active, "profiles": profiles})
 }
 
 fn image_built() -> bool {
@@ -662,26 +686,125 @@ fn panel_for_now(resumed: &HashSet<String>) -> Value {
 }
 
 // --- Chrome update (gui/chrome_update.py) ------------------------------------
+static UPDATE_CHECK: Mutex<()> = Mutex::new(());
+
+fn chrome_version_parts(version: &str) -> Vec<u64> {
+    let version = version.trim();
+    let version = version.split_once(':').map_or(version, |(_, rest)| rest);
+    let version = version.split_once('-').map_or(version, |(core, _)| core);
+    version.split('.').filter_map(|part| part.parse().ok()).collect()
+}
+
+fn installed_chrome_version() -> Option<String> {
+    let script = paths().script.to_str()?;
+    let out = simple_cmd(&[script, "chrome-image-version"], 52)?;
+    if out.code != Some(0) {
+        return None;
+    }
+    let text = out.stdout.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let version = text
+        .split(|c: char| !c.is_ascii_digit() && c != '.')
+        .map(|part| part.trim_matches('.'))
+        .find(|part| part.contains('.') && part.split('.').all(|n| !n.is_empty()));
+    Some(version.unwrap_or(text).into())
+}
+
+fn upstream_chrome_version() -> Option<String> {
+    let out = simple_cmd(&[
+        "bash", "-o", "pipefail", "-c",
+        "curl -fsSL --max-time 10 --user-agent 'DockedBrowser/1.0 (Debian)' \
+         https://dl.google.com/linux/chrome/deb/dists/stable/main/binary-amd64/Packages.gz | gzip -dc",
+    ], 12)?;
+    if out.code != Some(0) {
+        return None;
+    }
+    out.stdout
+        .split("\n\n")
+        .find(|entry| entry.lines().any(|line| line == "Package: google-chrome-stable"))?
+        .lines()
+        .find_map(|line| line.strip_prefix("Version:"))
+        .map(|version| version.trim().to_owned())
+}
+
+fn update_check_due(state: &Map<String, Value>, now: f64) -> bool {
+    let last = state.get("last_checked_at").and_then(py_float).unwrap_or(0.0);
+    let interval = if truthy(state.get("check_failed")) { RETRY_AFTER_FAIL_S } else { CHECK_INTERVAL_S };
+    !state.contains_key("update_available") || now - last >= interval
+}
+
+fn merge_chrome_probe(
+    mut state: Map<String, Value>,
+    installed_probe: Option<String>,
+    upstream_probe: Option<String>,
+) -> Map<String, Value> {
+    let failed = installed_probe.is_none() || upstream_probe.is_none();
+    let any_probe = installed_probe.is_some() || upstream_probe.is_some();
+    let installed = installed_probe.map(Value::String)
+        .or_else(|| state.remove("installed_version")).unwrap_or(Value::Null);
+    let upstream = upstream_probe.map(Value::String)
+        .or_else(|| state.remove("latest_version")).unwrap_or(Value::Null);
+    let has_versions = truthy(Some(&installed)) && truthy(Some(&upstream));
+
+    if !failed || !has_versions {
+        let notified = state.remove("last_notified_at");
+        state.clear();
+        if let Some(notified) = notified.filter(|value| truthy(Some(value))) {
+            state.insert("last_notified_at".into(), notified);
+        }
+    }
+    if any_probe || !has_versions {
+        let installed_parts = chrome_version_parts(installed.as_str().unwrap_or_default());
+        let upstream_parts = chrome_version_parts(upstream.as_str().unwrap_or_default());
+        let newer = !installed_parts.is_empty() && !upstream_parts.is_empty() && upstream_parts > installed_parts;
+        state.insert("update_available".into(), json!(newer));
+    }
+    if failed {
+        state.insert("check_failed".into(), json!(true));
+    }
+    state.insert("installed_version".into(), installed);
+    state.insert("latest_version".into(), upstream);
+    state
+}
+
 fn chrome_check(force: bool) -> Value {
-    let code = "from chrome_update import check_for_chrome_update; print(json.dumps(check_for_chrome_update(force=sys.argv[1] == '1')))";
-    py_call(code, &[if force { "1" } else { "0" }], 120)
-        .unwrap_or_else(|| read_json(&paths().state_dir.join("chrome-update-check.json")).unwrap_or(json!({})))
+    let _guard = UPDATE_CHECK.lock().unwrap_or_else(|e| e.into_inner());
+    let path = paths().state_dir.join("chrome-update-check.json");
+    let state = read_json(&path).and_then(|state| state.as_object().cloned()).unwrap_or_default();
+    let now = now_f64();
+    if !force && !update_check_due(&state, now) {
+        return Value::Object(state);
+    }
+    let mut state = merge_chrome_probe(state, installed_chrome_version(), upstream_chrome_version());
+    state.insert("last_checked_at".into(), json!(now));
+    let now_utc = unsafe { libc::time(std::ptr::null_mut()) };
+    let mut utc: libc::tm = unsafe { std::mem::zeroed() };
+    if !unsafe { libc::gmtime_r(&now_utc, &mut utc) }.is_null() {
+        state.insert("last_checked_iso".into(), json!(format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}+00:00",
+            utc.tm_year + 1900, utc.tm_mon + 1, utc.tm_mday, utc.tm_hour, utc.tm_min, utc.tm_sec
+        )));
+    }
+    let state = Value::Object(state);
+    let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    let save = || -> std::io::Result<()> {
+        fs::create_dir_all(&paths().state_dir)?;
+        fs::write(&temp, serde_json::to_string_pretty(&state)? + "\n")?;
+        fs::rename(&temp, &path)
+    };
+    if let Err(error) = save() {
+        let _ = fs::remove_file(&temp);
+        eprintln!("Cannot save Chrome update state: {error}");
+    }
+    state
 }
 
 fn update_status_payload() -> Value {
-    let state = read_json(&paths().state_dir.join("chrome-update-check.json")).unwrap_or(json!({}));
-    let due = match state.as_object() {
-        Some(s) if !s.is_empty() && s.contains_key("update_available") => {
-            let last = if truthy(s.get("last_checked_at")) { s.get("last_checked_at").and_then(py_float).unwrap_or(0.0) } else { 0.0 };
-            let interval = if truthy(s.get("check_failed")) { RETRY_AFTER_FAIL_S } else { CHECK_INTERVAL_S };
-            now_f64() - last >= interval
-        }
-        _ => true,
-    };
-    if due { chrome_check(false) } else { state }
+    chrome_check(false)
 }
 
-// --- Payloads ----------------------------------------------------------------
 fn status_payload() -> Map<String, Value> {
     let mut containers = docker_chrome_status();
     let profiles = known_profiles(&containers);
@@ -826,7 +949,7 @@ fn save_icon(profile: &str, data_url: &str) -> Map<String, Value> {
     if !profile_ok(profile) {
         return result(false, "Invalid profile name");
     }
-    // Keep PNG as-is; convert others with Pillow (as server.py did).
+    // Keep uploaded PNG bytes intact and normalize other formats to PNG.
     let png = match decode_data_url(data_url).and_then(|raw| {
         if raw.starts_with(b"\x89PNG\r\n\x1a\n") { Ok(raw) } else { convert_binary(raw) }
     }) {
@@ -852,27 +975,30 @@ fn save_icon(profile: &str, data_url: &str) -> Map<String, Value> {
     r
 }
 
-/// JPEG / WebP / GIF → 256px PNG via Pillow, bytes over stdin/stdout.
+/// Decode the first frame and fit it within 256×256 without enlarging it.
 fn convert_binary(raw: Vec<u8>) -> Result<Vec<u8>, String> {
-    let code = "import sys; from io import BytesIO; from PIL import Image; \
-                img = Image.open(BytesIO(sys.stdin.buffer.read())).convert('RGBA'); img.thumbnail((256, 256)); \
-                out = BytesIO(); img.save(out, format='PNG'); sys.stdout.buffer.write(out.getvalue())";
-    let fail = || "Please upload a PNG icon (or install Pillow for JPEG/WebP).".to_string();
-    let mut child = Command::new("python3")
-        .arg("-c")
-        .arg(code)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|_| fail())?;
-    let mut stdin = child.stdin.take().ok_or_else(fail)?;
-    let feeder = thread::spawn(move || {
-        let _ = stdin.write_all(&raw);
-    });
-    let out = child.wait_with_output().map_err(|_| fail())?;
-    let _ = feeder.join();
-    if out.status.success() && out.stdout.starts_with(b"\x89PNG") { Ok(out.stdout) } else { Err(fail()) }
+    use image::{DynamicImage, ImageFormat, ImageReader, Limits};
+    use std::io::Cursor;
+
+    let mut reader = ImageReader::new(Cursor::new(raw))
+        .with_guessed_format()
+        .map_err(|e| format!("Cannot read icon: {e}"))?;
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(8192);
+    limits.max_image_height = Some(8192);
+    limits.max_alloc = Some(128 * 1024 * 1024);
+    reader.limits(limits);
+    let image = reader.decode().map_err(|e| format!("Cannot decode icon: {e}"))?;
+    let image = if image.width() > 256 || image.height() > 256 {
+        image.resize(256, 256, image::imageops::FilterType::CatmullRom)
+    } else {
+        image
+    };
+    let mut png = Cursor::new(Vec::new());
+    DynamicImage::ImageRgba8(image.into_rgba8())
+        .write_to(&mut png, ImageFormat::Png)
+        .map_err(|e| format!("Cannot encode icon: {e}"))?;
+    Ok(png.into_inner())
 }
 
 fn clear_icon(profile: &str) -> Map<String, Value> {
@@ -1062,8 +1188,9 @@ fn handle_post(path: &str, body: &[u8]) -> Response {
                 return resp_json(400, result(false, "Invalid JSON"));
             }
             if obj.contains_key("enabled") {
-                let on = if truthy(obj.get("enabled")) { "1" } else { "0" };
-                py_call("from predict_sleep import set_enabled; set_enabled(sys.argv[1] == '1')", &[on], 30);
+                if let Err(error) = sleep_state::set_enabled(truthy(obj.get("enabled"))) {
+                    return resp_json(500, result(false, format!("Cannot update predict-sleep: {error}")));
+                }
             }
             let mut m = Map::new();
             m.insert("ok".into(), json!(true));
@@ -1252,6 +1379,136 @@ fn main() {
         std::process::exit(1);
     };
     let p = PATHS.get_or_init(|| init_paths(root));
+    let mut args = std::env::args_os().skip(1);
+    let command = args.next();
+    if command.as_deref() == Some(std::ffi::OsStr::new("profile-icon")) {
+        let args: Vec<_> = args.collect();
+        let [name, color, custom, output] = args.as_slice() else {
+            eprintln!("Usage: profile-icon NAME COLOR CUSTOM_PATH OUTPUT_PNG");
+            std::process::exit(2);
+        };
+        let result = profile_icon::write(
+            name.to_str().unwrap_or_default(),
+            color.to_str().unwrap_or_default(),
+            Path::new(custom),
+            Path::new(output),
+        );
+        if let Err(error) = result {
+            eprintln!("Cannot write profile icon: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if command.as_deref() == Some(std::ffi::OsStr::new("start-wake-watcher")) {
+        ensure_watcher();
+        return;
+    }
+    let policy_command = command.as_ref().and_then(|value| value.to_str());
+    if matches!(policy_command, Some("predict-policy" | "update-policy")) {
+        let mut input = Vec::new();
+        let result = std::io::stdin().take(64 * 1024 + 1).read_to_end(&mut input)
+            .ok()
+            .filter(|&length| length <= 64 * 1024)
+            .and_then(|_| serde_json::from_slice(&input).ok())
+            .and_then(|input| {
+                if policy_command == Some("update-policy") {
+                    sleep_state::update_policy(&input)
+                } else {
+                    sleep_state::select_policy(&input)
+                }
+            });
+        match result {
+            Some(result) => println!("{result}"),
+            None => {
+                eprintln!("Invalid sleep policy input");
+                std::process::exit(2);
+            }
+        }
+        return;
+    }
+    if command.as_deref() == Some(std::ffi::OsStr::new("save-sleep-checkpoint")) {
+        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+            let name = args.next().and_then(|value| value.into_string().ok()).ok_or("Missing checkpoint name")?;
+            let mut input = Vec::new();
+            std::io::stdin().take(4 * 1024 * 1024 + 1).read_to_end(&mut input)?;
+            if input.len() > 4 * 1024 * 1024 {
+                return Err("Checkpoint input exceeds 4 MiB".into());
+            }
+            sleep_state::save_checkpoint(&name, &serde_json::from_slice(&input)?)?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            eprintln!("Cannot save sleep checkpoint: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if command.as_deref() == Some(std::ffi::OsStr::new("predict-daemon")) {
+        if let Err(error) = scheduler::run() {
+            eprintln!("Predict-sleep daemon: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if command.as_deref() == Some(std::ffi::OsStr::new("mark-profile-used")) {
+        let profile = args.next().and_then(|value| value.into_string().ok()).unwrap_or_default();
+        if let Err(error) = sleep_state::mark_used(&profile) {
+            eprintln!("Cannot record profile use: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if command.as_deref() == Some(std::ffi::OsStr::new("log-profile-use")) {
+        let profile = args.next().and_then(|value| value.into_string().ok()).unwrap_or_default();
+        match habit::log_use(&profile) {
+            Ok(added) => println!("{added}"),
+            Err(error) => {
+                eprintln!("Cannot record habit: {error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    if command.as_deref() == Some(std::ffi::OsStr::new("offload-tick")) {
+        if let Err(error) = offload::tick() {
+            eprintln!("offload state error: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if command.as_deref() == Some(std::ffi::OsStr::new("seed-chrome-fonts")) {
+        let Some(path) = args.next() else {
+            eprintln!("Usage: seed-chrome-fonts PREFERENCES_PATH");
+            std::process::exit(2);
+        };
+        if let Err(error) = seed_chrome_fonts(Path::new(&path)) {
+            eprintln!("Cannot seed Chrome fonts: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if command.as_deref() == Some(std::ffi::OsStr::new("status")) {
+        println!("{:#}", cli_status());
+        return;
+    }
+    if command.as_deref() == Some(std::ffi::OsStr::new("check-update")) {
+        let state = chrome_check(true);
+        println!("{}", serde_json::to_string_pretty(&state).expect("serializable update state"));
+        if truthy(state.get("update_available")) {
+            let latest = state["latest_version"].as_str().unwrap_or("unknown");
+            let installed = state["installed_version"].as_str().unwrap_or("unknown");
+            println!("Update available: {latest} (installed: {installed})");
+            println!("Run `./bin/docked-browser build` or click Install Update in the app to install.");
+        } else {
+            let installed = state["installed_version"].as_str().unwrap_or("latest");
+            println!("Google Chrome is up to date ({installed}).");
+        }
+        return;
+    }
+    if let Some(command) = command {
+        eprintln!("Unknown command: {}", command.to_string_lossy());
+        std::process::exit(2);
+    }
     if !p.template.is_file() {
         eprintln!("Missing template: {}", p.template.display());
         std::process::exit(1);
@@ -1288,5 +1545,92 @@ fn main() {
     for stream in listener.incoming().flatten() {
         // One thread per connection, like ThreadingHTTPServer.
         let _ = thread::Builder::new().stack_size(256 * 1024).spawn(move || handle_conn(stream));
+    }
+}
+
+#[cfg(test)]
+mod icon_tests {
+    use super::convert_binary;
+    use image::{DynamicImage, ImageFormat, RgbImage};
+    use std::io::Cursor;
+
+    #[test]
+    fn converts_browser_icon_formats_to_rgba_png() {
+        for format in [ImageFormat::Jpeg, ImageFormat::WebP, ImageFormat::Gif] {
+            for (width, height, expected) in [(512, 256, (256, 128)), (48, 24, (48, 24))] {
+                let image = DynamicImage::ImageRgb8(RgbImage::new(width, height));
+                let mut input = Cursor::new(Vec::new());
+                image.write_to(&mut input, format).unwrap();
+
+                let png = convert_binary(input.into_inner()).unwrap();
+                let decoded = image::load_from_memory_with_format(&png, ImageFormat::Png).unwrap();
+                assert_eq!((decoded.width(), decoded.height()), expected, "{format:?}");
+                assert!(decoded.as_rgba8().is_some(), "{format:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_truncated_image() {
+        assert!(convert_binary(b"GIF89a".to_vec()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod chrome_update_tests {
+    use super::{merge_chrome_probe, update_check_due};
+    use serde_json::json;
+
+    #[test]
+    fn failed_probe_preserves_known_update_and_retries_early() {
+        let state = json!({
+            "installed_version": "154.0.1.2",
+            "latest_version": "155.0.1.2-1",
+            "update_available": true,
+            "last_notified_at": 20,
+        });
+        let mut merged = merge_chrome_probe(state.as_object().unwrap().clone(), None, None);
+        assert_eq!(merged["update_available"], true);
+        assert_eq!(merged["check_failed"], true);
+        assert_eq!(merged["last_notified_at"], 20);
+        merged.insert("last_checked_at".into(), json!(100));
+        assert!(!update_check_due(&merged, 3699.0));
+        assert!(update_check_due(&merged, 3700.0));
+
+        let fresh = merge_chrome_probe(merged, Some("155.0.1.2".into()), Some("1:155.0.1.2-1".into()));
+        assert_eq!(fresh["update_available"], false);
+        assert!(!fresh.contains_key("check_failed"));
+        assert_eq!(fresh["last_notified_at"], 20);
+    }
+}
+
+#[cfg(test)]
+mod predict_sleep_route_tests {
+    use super::*;
+
+    #[test]
+    fn toggle_keeps_existing_profile_state() {
+        let state_dir = std::env::temp_dir().join(format!(
+            "docked-sleep-route-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        fs::create_dir(&state_dir).unwrap();
+        let mut p = init_paths(PathBuf::new());
+        p.state_dir = state_dir.clone();
+        assert!(PATHS.set(p).is_ok());
+        let path = state_dir.join("predict-sleep-state.json");
+        let profiles = json!({"Work": {"last_used_at": 123, "last_wall_input_at": 123}});
+        fs::write(&path, json!({"enabled": true, "profiles": profiles}).to_string()).unwrap();
+
+        let response = handle_post("/api/predict-sleep", br#"{"enabled":false}"#);
+        let saved = read_json(&path).unwrap();
+        fs::remove_file(path).unwrap();
+        fs::remove_file(state_dir.join("predict-sleep-state.lock")).unwrap();
+        fs::remove_dir(state_dir).unwrap();
+        let payload: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(payload["ok"], true);
+        assert_eq!(payload["enabled"], false);
+        assert_eq!(saved, json!({"enabled": false, "profiles": profiles}));
     }
 }

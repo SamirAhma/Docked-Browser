@@ -30,7 +30,7 @@ BIN_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 ROOT_DIR="$(cd "$BIN_DIR/.." && pwd)"          # repo root (Dockerfile lives here)
 GUI_DIR="$ROOT_DIR/gui"
 DOCK_ICON_PY="$GUI_DIR/dock_icon.py"
-BRAND_ICONS_PY="$GUI_DIR/brand_icons.py"
+RUST_GUI="$ROOT_DIR/gui-server/target/release/docked-browser-gui"
 FOCUS_MODAL="$BIN_DIR/focus-modal"
 DOWNLOADS_DIR="${HOME}/Downloads"
 DOCUMENTS_DIR="${HOME}/Documents"
@@ -100,7 +100,9 @@ remember_active() {
   mkdir -p "$STATE_DIR"
   printf '%s\n' "$PROFILE_NAME" > "$ACTIVE_FILE"
   # Tell predict-sleep this exact profile was opened / resumed
-  if [[ -f "$GUI_DIR/predict_sleep.py" ]]; then
+  if [[ -x "$RUST_GUI" && -z "${DOCKED_BROWSER_PYTHON_GUI:-}" ]]; then
+    DOCKED_BROWSER_ROOT="$ROOT_DIR" "$RUST_GUI" mark-profile-used "$PROFILE_NAME" || true
+  elif [[ -f "$GUI_DIR/predict_sleep.py" ]]; then
     PYTHONPATH="$GUI_DIR${PYTHONPATH:+:$PYTHONPATH}" \
       python3 -c "from predict_sleep import mark_used; mark_used('$PROFILE_NAME')" 2>/dev/null || true
   fi
@@ -109,6 +111,10 @@ remember_active() {
 # GNOME Dash raises a mapped paused window without re-running Exec. The
 # wake-on-focus watcher resumes that profile when its class becomes focused.
 spawn_wake_watcher() {
+  if [[ -x "$RUST_GUI" && -x "$ROOT_DIR/wake-paused/target/release/wake-paused" ]]; then
+    DOCKED_BROWSER_ROOT="$ROOT_DIR" "$RUST_GUI" start-wake-watcher >/dev/null 2>&1 || true
+    return
+  fi
   [[ -f "$GUI_DIR/wake_paused.py" ]] || return 0
   PYTHONPATH="$GUI_DIR${PYTHONPATH:+:$PYTHONPATH}" \
     python3 -c 'from wake_paused import ensure_watcher; ensure_watcher()' \
@@ -1128,7 +1134,11 @@ ensure_profile_gui_icon() {
   local color custom_icon
   color="$(profile_color)"
   custom_icon="${DATA_DIR}/dock-icon.png"
-  python3 "$DOCK_ICON_PY" "$PROFILE_NAME" "$color" "$custom_icon" "$PROFILE_ICON_FILE"
+  if [[ -x "$RUST_GUI" ]]; then
+    DOCKED_BROWSER_ROOT="$ROOT_DIR" "$RUST_GUI" profile-icon "$PROFILE_NAME" "$color" "$custom_icon" "$PROFILE_ICON_FILE"
+  else
+    python3 "$DOCK_ICON_PY" "$PROFILE_NAME" "$color" "$custom_icon" "$PROFILE_ICON_FILE"
+  fi
 }
 
 cleanup_legacy_dock_files() {
@@ -1714,9 +1724,9 @@ install_dock_entry() {
     mkdir -p "$DATA_DIR"
   fi
 
-  if [[ -f "$BRAND_ICONS_PY" ]]; then
-    python3 "$BRAND_ICONS_PY" --icons-dir "$ICON_DIR" --no-static >/dev/null || true
-  fi
+  cp -- "$GUI_DIR/static/brand-web.png" "$ICON_DIR/docked-browser.png" || true
+  cp -- "$GUI_DIR/static/brand-tray.png" "$ICON_DIR/docked-browser-tray.png" || true
+  cp -- "$GUI_DIR/static/brand-modal.png" "$ICON_DIR/docked-browser-modal.png" || true
 
   cleanup_legacy_dock_files
   prune_stale_profile_desktops
@@ -1820,6 +1830,10 @@ PY
 seed_chrome_fonts() {
   local prefs="${DATA_DIR}/Default/Preferences"
   mkdir -p "${DATA_DIR}/Default"
+  if [[ -x "$RUST_GUI" ]]; then
+    DOCKED_BROWSER_ROOT="$ROOT_DIR" "$RUST_GUI" seed-chrome-fonts "$prefs"
+    return
+  fi
   python3 - "$prefs" <<'PY'
 import json, sys, pathlib
 path = pathlib.Path(sys.argv[1])
@@ -1930,10 +1944,7 @@ cmd_build() {
   docker tag "$IMAGE_NAME" local-chrome-cockpit 2>/dev/null || true
   echo "Chrome image rebuilt. Close and reopen a browser to use the new version."
   build_wake_watcher
-  PYTHONPATH="$GUI_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - <<'PY'
-from chrome_update import check_for_chrome_update
-check_for_chrome_update(force=True)
-PY
+  cmd_check_update >/dev/null
 }
 
 cmd_run() {
@@ -2371,10 +2382,31 @@ cmd_focus() {
 }
 
 cmd_status() {
+  if [[ -x "$RUST_GUI" ]]; then
+    DOCKED_BROWSER_ROOT="$ROOT_DIR" "$RUST_GUI" status
+    return
+  fi
   PYTHONPATH="$GUI_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 -c 'from control import status_json; print(status_json())'
 }
 
+# Internal version probe for the Rust update checker.
+cmd_chrome_image_version() {
+  local image version
+  for image in "$IMAGE_NAME" local-chrome-cockpit; do
+    timeout 10s docker image inspect "$image" >/dev/null 2>&1 || continue
+    if version=$(timeout 15s docker run --rm "$image" --version 2>/dev/null); then
+      printf '%s\n' "$version"
+      return 0
+    fi
+  done
+  return 1
+}
+
 cmd_check_update() {
+  if [[ -x "$RUST_GUI" && -z "${DOCKED_BROWSER_PYTHON_GUI:-}" ]]; then
+    DOCKED_BROWSER_ROOT="$ROOT_DIR" "$RUST_GUI" check-update
+    return
+  fi
   PYTHONPATH="$GUI_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - <<'PY'
 from chrome_update import check_for_chrome_update
 import json
@@ -2405,6 +2437,9 @@ main() {
       ;;
     status)
       cmd_status
+      ;;
+    chrome-image-version)
+      cmd_chrome_image_version
       ;;
     check-update)
       cmd_check_update

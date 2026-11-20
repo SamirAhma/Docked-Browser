@@ -86,6 +86,27 @@ ACTION_KEEP = "KeepRunning"
 ACTION_PAUSE = "Pause"
 
 
+def _save_checkpoint(path: Path, data: dict) -> None:
+    rust = CLI.parent.parent / "gui-server/target/release/docked-browser-gui"
+    if path in (MODEL_PATH, SLEEP_STATE_PATH) and os.access(rust, os.X_OK) and not os.environ.get("DOCKED_BROWSER_PYTHON_GUI"):
+        try:
+            result = subprocess.run(
+                [str(rust), "save-sleep-checkpoint", path.name],
+                env={**os.environ, "DOCKED_BROWSER_ROOT": str(CLI.parent.parent)},
+                input=json.dumps(data),
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                return
+        except (OSError, subprocess.SubprocessError):
+            pass
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
 # --- Small math helpers ------------------------------------------------------
 def _mat_vec(dim: int, m: list[float], x: list[float]) -> list[float]:
     out = [0.0] * dim
@@ -355,9 +376,7 @@ class LinUcb:
             "keep": {"a": self.arms[0].a, "b": self.arms[0].b},
             "pause": {"a": self.arms[1].a, "b": self.arms[1].b},
         }
-        tmp = self.path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(snap, indent=2) + "\n", encoding="utf-8")
-        tmp.replace(self.path)
+        _save_checkpoint(self.path, snap)
 
     def select(self, ctx: Context) -> str:
         self.decisions += 1
@@ -369,11 +388,51 @@ class LinUcb:
             return heuristic_action(ctx)
         return ACTION_KEEP if stay >= allow else ACTION_PAUSE
 
+    def _rust_policy(self, command: str, ctx: Context, now: float, **request: Any) -> dict | None:
+        rust = CLI.parent.parent / "gui-server/target/release/docked-browser-gui"
+        if self.dim != FEATURE_DIM or not os.access(rust, os.X_OK) or os.environ.get("DOCKED_BROWSER_PYTHON_GUI"):
+            return None
+        request.update(profile=ctx.profile, context=vars(ctx), now=now)
+        try:
+            result = subprocess.run(
+                [str(rust), command],
+                env={**os.environ, "DOCKED_BROWSER_ROOT": str(CLI.parent.parent)},
+                input=json.dumps(request),
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=True,
+            )
+            response = json.loads(result.stdout)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return None
+        return response if isinstance(response, dict) else None
+
+    def select_for_tick(self, ctx: Context, now: float) -> tuple[str, bool]:
+        decision = self._rust_policy(
+            "predict-policy", ctx, now, alpha=self.alpha,
+            keep={"a_inv": self.arms[0].a_inv, "b": self.arms[0].b},
+            pause={"a_inv": self.arms[1].a_inv, "b": self.arms[1].b},
+        )
+        if decision and decision.get("action") in (ACTION_KEEP, ACTION_PAUSE):
+            self.last_ucb = tuple(decision["scores"])
+            self.decisions += 1
+            return decision["action"], decision["explored"]
+        action = self.select(ctx)
+        explored = action == ACTION_KEEP and not ctx.chrome_focused and should_explore_pause(ctx.profile, ctx.idle_ms, now)
+        return (ACTION_PAUSE if explored else action), explored
+
     def update(self, ctx: Context, action: str, reward: float) -> None:
         reward = max(-1.0, min(1.0, reward))
-        x = ctx.features()
-        idx = 0 if action == ACTION_KEEP else 1
-        self.arms[idx].observe(self.dim, x, reward)
+        arm = self.arms[0 if action == ACTION_KEEP else 1]
+        updated = self._rust_policy(
+            "update-policy", ctx, time.time(), reward=reward,
+            arm={"a": arm.a, "b": arm.b, "a_inv": arm.a_inv},
+        )
+        if updated and all(key in updated for key in ("a", "b", "a_inv")):
+            arm.a, arm.b, arm.a_inv = updated["a"], updated["b"], updated["a_inv"]
+        else:
+            arm.observe(self.dim, ctx.features(), reward)
         self.updates += 1
         self.last_reward = reward
 
@@ -871,6 +930,7 @@ class ProfileSleepState:
 class SleepStore:
     profiles: dict[str, ProfileSleepState] = field(default_factory=dict)
     enabled: bool = True
+    _loaded_input: dict[str, float] = field(default_factory=dict, repr=False)
 
     def get(self, name: str) -> ProfileSleepState:
         if name not in self.profiles:
@@ -901,9 +961,10 @@ class SleepStore:
             if st.cancel_grace_until is not None:
                 st.cancel_grace_until = float(st.cancel_grace_until)
             store.profiles[name] = st
+            store._loaded_input[name] = st.last_wall_input_at
         return store
 
-    def save(self) -> None:
+    def save(self, *, change_enabled: bool = False) -> None:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         payload = {
             "enabled": self.enabled,
@@ -919,9 +980,27 @@ class SleepStore:
                 for name, st in self.profiles.items()
             },
         }
-        tmp = SLEEP_STATE_PATH.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-        tmp.replace(SLEEP_STATE_PATH)
+        with (STATE_DIR / "predict-sleep-state.lock").open("a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                current = json.loads(SLEEP_STATE_PATH.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                current = {}
+            if isinstance(current, dict):
+                if not change_enabled:
+                    payload["enabled"] = current.get("enabled", self.enabled)
+                profiles = current.get("profiles")
+                if isinstance(profiles, dict):
+                    for name, profile in profiles.items():
+                        if not PROFILE_RE.fullmatch(name) or not isinstance(profile, dict):
+                            continue
+                        latest_input = profile.get("last_wall_input_at")
+                        original_input = self._loaded_input.get(name)
+                        if isinstance(latest_input, (int, float)) and latest_input != original_input:
+                            pending = payload["profiles"].get(name, {})
+                            if latest_input > pending.get("last_wall_input_at", 0):
+                                payload["profiles"][name] = profile
+            _save_checkpoint(SLEEP_STATE_PATH, payload)
 
 
 def mark_used(profile: str) -> None:
@@ -1042,7 +1121,7 @@ def status_payload() -> dict:
 def set_enabled(enabled: bool) -> dict:
     store = SleepStore.load()
     store.enabled = bool(enabled)
-    store.save()
+    store.save(change_enabled=True)
     return status_payload()
 
 
@@ -1121,15 +1200,7 @@ def tick(bandit: LinUcb | None = None, store: SleepStore | None = None) -> list[
             changed = True
             continue
 
-        action = bandit.select(ctx)
-        explored = False
-        if (
-            action == ACTION_KEEP
-            and not in_use
-            and should_explore_pause(profile, idle_ms, now)
-        ):
-            action = ACTION_PAUSE
-            explored = True
+        action, explored = bandit.select_for_tick(ctx, now)
         applied = ACTION_KEEP
 
         if action == ACTION_PAUSE and idle_ms >= MIN_AI_PAUSE_IDLE_MS and not in_use:
@@ -1220,34 +1291,62 @@ class PredictSleepDaemon:
             self._lock_fd = None
 
     def _loop(self) -> None:
-        # Fresh model on first boot
-        bandit = LinUcb.load_or_default()
-        if bandit.updates == 0:
-            try:
-                bandit.save()
-            except OSError:
-                pass
+        bandit = initialize_bandit()
         while not self._stop.wait(POLL_INTERVAL_S):
-            try:
-                from habit_suggest import daemon_tick
+            poll_once(bandit)
 
-                daemon_tick()
-            except Exception as exc:  # noqa: BLE001 — suggestion must not stop auto-pause
-                _log(f"habit error: {exc}")
-            try:
-                from chrome_update import notify_chrome_update_if_needed
 
-                notify_chrome_update_if_needed()
-            except Exception as exc:  # noqa: BLE001 — update check must not stop auto-pause
-                _log(f"chrome update check error: {exc}")
-            try:
-                tick(bandit)
-            except Exception as exc:  # noqa: BLE001 — keep daemon alive
-                _log(f"tick error: {exc}")
-            try:
-                offload_tick()
-            except Exception as exc:  # noqa: BLE001 — offload must not stop auto-pause
-                _log(f"offload error: {exc}")
+def initialize_bandit() -> LinUcb:
+    bandit = LinUcb.load_or_default()
+    if bandit.updates == 0:
+        try:
+            bandit.save()
+        except OSError:
+            pass
+    return bandit
+
+
+def poll_once(bandit: LinUcb) -> None:
+    try:
+        from habit_suggest import daemon_tick
+
+        daemon_tick()
+    except Exception as exc:  # noqa: BLE001 — suggestion must not stop auto-pause
+        _log(f"habit error: {exc}")
+    try:
+        from chrome_update import notify_chrome_update_if_needed
+
+        notify_chrome_update_if_needed()
+    except Exception as exc:  # noqa: BLE001 — update check must not stop auto-pause
+        _log(f"chrome update check error: {exc}")
+    try:
+        tick(bandit)
+    except Exception as exc:  # noqa: BLE001 — keep daemon alive
+        _log(f"tick error: {exc}")
+    try:
+        offload_tick_binary = CLI.parent.parent / "gui-server/target/release/docked-browser-gui"
+        if os.access(offload_tick_binary, os.X_OK) and not os.environ.get("DOCKED_BROWSER_PYTHON_GUI"):
+            subprocess.run(
+                [str(offload_tick_binary), "offload-tick"],
+                env={**os.environ, "DOCKED_BROWSER_ROOT": str(CLI.parent.parent)},
+                check=True,
+            )
+        else:
+            offload_tick()
+    except Exception as exc:  # noqa: BLE001 — offload must not stop auto-pause
+        _log(f"offload error: {exc}")
+
+
+def poll_worker() -> None:
+    """Run one poll for each command received from the Rust scheduler."""
+    import sys
+
+    bandit = initialize_bandit()
+    for command in sys.stdin:
+        if command.rstrip("\n") != "tick":
+            raise SystemExit("Unexpected predict-sleep worker command")
+        poll_once(bandit)
+        print("docked-predict-sleep: tick complete", flush=True)
 
 
 _daemon: PredictSleepDaemon | None = None

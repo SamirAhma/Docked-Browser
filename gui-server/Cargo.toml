@@ -9,6 +9,8 @@ license = "MIT"
 serde_json = { version = "1", features = ["preserve_order"] }
 base64 = "0.22"
 libc = "0.2"
+fontdue = "0.9"
+image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 
 [profile.release]
 opt-level = 3

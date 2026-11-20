@@ -218,10 +218,24 @@ def main() -> int:
             start_new_session=True,
         )
 
-    ensure_daemon()
-    ensure_watcher()
-    Tray()
-    Gtk.main()
+    scheduler = os.path.join(os.path.dirname(cli), "docked-predict-sleep")
+    rust_gui = os.path.join(os.path.dirname(cli), "..", "gui-server", "target", "release", "docked-browser-gui")
+    daemon = None
+    if os.access(rust_gui, os.X_OK) and not os.environ.get("DOCKED_BROWSER_PYTHON_GUI"):
+        try:
+            daemon = subprocess.Popen([scheduler], stdin=subprocess.DEVNULL)
+        except OSError:
+            ensure_daemon()
+    else:
+        ensure_daemon()
+    try:
+        ensure_watcher()
+        Tray()
+        Gtk.main()
+    finally:
+        if daemon is not None and daemon.poll() is None:
+            daemon.terminate()
+            daemon.wait()
     return 0
 
 

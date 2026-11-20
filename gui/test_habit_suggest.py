@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from habit_suggest import (
     MIN_WEEKS,
@@ -30,7 +31,7 @@ from habit_suggest import (
     spawn_activate,
     week_key,
 )
-from predict_sleep import MYT_OFFSET_SECS, PredictSleepDaemon, mark_used
+from predict_sleep import MYT_OFFSET_SECS, LinUcb, mark_used, poll_once
 
 
 def _monday(hour: int = 9) -> datetime:
@@ -279,9 +280,17 @@ class HabitSuggestTest(unittest.TestCase):
         self.assertEqual(calls["n"], 0)
 
     def test_daemon_loop_ticks_habit_and_mark_used_logs(self) -> None:
-        loop = inspect.getsource(PredictSleepDaemon._loop)
-        self.assertIn("daemon_tick", loop)
-        self.assertIn("tick(bandit)", loop)
+        bandit = LinUcb()
+        with (
+            patch("habit_suggest.daemon_tick") as habit_tick,
+            patch("chrome_update.notify_chrome_update_if_needed"),
+            patch("predict_sleep.tick") as sleep_tick,
+            patch("predict_sleep.offload_tick"),
+            patch("predict_sleep.os.access", return_value=False),
+        ):
+            poll_once(bandit)
+        habit_tick.assert_called_once_with()
+        sleep_tick.assert_called_once_with(bandit)
         self.assertIn("log_use", inspect.getsource(mark_used))
 
 

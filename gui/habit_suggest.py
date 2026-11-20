@@ -238,6 +238,17 @@ def log_use(profile: str, *, when: datetime | None = None, path: Path | None = N
     """Persist one real use. Idle background time must not call this."""
     if not isinstance(profile, str) or not PROFILE_RE.match(profile):
         return False
+    rust = CLI.parent.parent / "gui-server/target/release/docked-browser-gui"
+    if when is None and path is None and os.access(rust, os.X_OK) and not os.environ.get("DOCKED_BROWSER_PYTHON_GUI"):
+        result = subprocess.run(
+            [str(rust), "log-profile-use", profile],
+            env={**os.environ, "DOCKED_BROWSER_ROOT": str(CLI.parent.parent)},
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0 and result.stdout.strip() in {"true", "false"}:
+            return result.stdout.strip() == "true"
     when = when or myt_datetime()
     path = path or HABIT_PATH
 

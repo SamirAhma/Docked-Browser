@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""Standalone predict-sleep daemon for Docked Browser profiles.
+
+Runs the ambient-sleep LinUCB loop without the web UI. Prefer the GUI
+server or tray when those are already autostarted — this is a fallback.
+"""
+from __future__ import annotations
+
+import os
+import signal
+import sys
+import time
+
+# Pin the local Docker daemon; another tool may have switched the global context.
+os.environ["DOCKER_CONTEXT"] = "default"
+
+GUI_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, GUI_DIR)
+
+from predict_sleep import POLL_INTERVAL_S, ensure_daemon, poll_worker  # noqa: E402
+from wake_paused import ensure_watcher  # noqa: E402
+
+
+def main() -> int:
+    os.environ.setdefault("DISPLAY", ":0")
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    os.environ.setdefault("XDG_RUNTIME_DIR", runtime)
+    if not os.environ.get("WAYLAND_DISPLAY"):
+        sock = os.path.join(runtime, "wayland-0")
+        if os.path.exists(sock):
+            os.environ["WAYLAND_DISPLAY"] = "wayland-0"
+
+    if sys.argv[1:] == ["--poll-worker"]:
+        poll_worker()
+        return 0
+
+    if not ensure_daemon():
+        print("predict-sleep already running elsewhere", flush=True)
+        ensure_watcher()
+        return 0
+
+    ensure_watcher()
+    print(f"Docked Browser predict-sleep (poll={POLL_INTERVAL_S}s)", flush=True)
+    stop = False
+
+    def _stop(*_args: object) -> None:
+        nonlocal stop
+        stop = True
+
+    signal.signal(signal.SIGINT, _stop)
+    signal.signal(signal.SIGTERM, _stop)
+
+    while not stop:
+        time.sleep(1)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
