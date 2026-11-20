@@ -1,0 +1,243 @@
+#!/usr/bin/env python3
+"""Docked Browser tray indicator — shows playing profiles; icons match the modal/dock."""
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import threading
+
+# Pin the local Docker daemon; another tool may have switched the global context.
+os.environ["DOCKER_CONTEXT"] = "default"
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("AyatanaAppIndicator3", "0.1")
+from gi.repository import AyatanaAppIndicator3 as AppIndicator3
+from gi.repository import GdkPixbuf, GLib, Gtk
+
+GUI_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, GUI_DIR)
+from control import (  # noqa: E402
+    LAUNCHER_ICON,
+    TRAY_ICON,
+    ensure_brand_icons,
+    get_active_profile,
+    get_theme_pref,
+    list_playing_profiles,
+    open_focus_modal,
+    open_full_gui,
+    playing_tray_icon,
+    profile_icon_path,
+    run_cli,
+    save_prefs,
+    wayland_activation_token,
+)
+from chrome_update import load_update_state  # noqa: E402
+from predict_sleep import ensure_daemon  # noqa: E402
+from wake_paused import ensure_watcher  # noqa: E402
+
+APP_ID = "org.dockedbrowser.tray"
+
+
+def _menu_image(path: str | None, size: int = 22) -> Gtk.Image:
+    if path and os.path.isfile(path):
+        try:
+            pix = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, size, size, True)
+            return Gtk.Image.new_from_pixbuf(pix)
+        except Exception:
+            pass
+    return Gtk.Image.new_from_icon_name("web-browser", Gtk.IconSize.MENU)
+
+
+class Tray:
+    def __init__(self) -> None:
+        ensure_brand_icons()
+        icon = str(playing_tray_icon()) if playing_tray_icon().is_file() else "web-browser"
+        self.ind = AppIndicator3.Indicator.new(
+            APP_ID,
+            icon,
+            AppIndicator3.IndicatorCategory.APPLICATION_STATUS,
+        )
+        self.ind.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
+        self.ind.set_title("Docked Browser")
+        self.menu = Gtk.Menu()
+        self.ind.set_menu(self.menu)
+        self.ind.set_secondary_activate_target(Gtk.MenuItem())
+        self._rebuild_menu()
+        GLib.timeout_add_seconds(4, self._tick)
+
+    def _tick(self) -> bool:
+        self._rebuild_menu()
+        return True
+
+    def _rebuild_menu(self) -> None:
+        for child in list(self.menu.get_children()):
+            self.menu.remove(child)
+
+        playing = list_playing_profiles()
+        active = get_active_profile()
+        current = next((p["profile"] for p in playing if p.get("active")), None)
+        if not current and playing:
+            current = playing[0]["profile"]
+        if current and active and current not in {p["profile"] for p in playing}:
+            current = playing[0]["profile"] if playing else ""
+
+        head = Gtk.MenuItem.new_with_label(
+            f"Now Playing — {current}" if current else "Nothing Playing"
+        )
+        head.set_sensitive(False)
+        self.menu.append(head)
+        self.menu.append(Gtk.SeparatorMenuItem())
+
+        update_info = load_update_state()
+        if update_info.get("update_available"):
+            latest = update_info.get("latest_version") or ""
+            update_item = Gtk.MenuItem.new_with_label(f"★ Install Chrome Update ({latest})…")
+            update_item.connect("activate", lambda *_: self._install_update())
+            self.menu.append(update_item)
+            self.menu.append(Gtk.SeparatorMenuItem())
+
+        open_item = Gtk.MenuItem.new_with_label("Open Picker…")
+        open_item.connect("activate", lambda *_: open_focus_modal())
+        self.menu.append(open_item)
+        self.menu.append(Gtk.SeparatorMenuItem())
+
+        if not playing:
+            empty = Gtk.MenuItem.new_with_label("No browsers running")
+            empty.set_sensitive(False)
+            self.menu.append(empty)
+        else:
+            for item in playing:
+                label = item["profile"]
+                if item.get("active"):
+                    label = f"● {label}"
+                icon_path = item.get("icon") or ""
+                if not icon_path:
+                    p = profile_icon_path(item["profile"])
+                    icon_path = str(p) if p else ""
+                mi = Gtk.ImageMenuItem.new_with_label(label)
+                mi.set_image(_menu_image(icon_path or None))
+                mi.set_always_show_image(True)
+                submenu = Gtk.Menu()
+                self._fill_profile_menu(submenu, item["profile"])
+                mi.set_submenu(submenu)
+                self.menu.append(mi)
+
+        self.menu.append(Gtk.SeparatorMenuItem())
+        ui = Gtk.MenuItem.new_with_label("Open Web UI")
+        ui.connect("activate", lambda *_: open_full_gui())
+        self.menu.append(ui)
+
+        appear = Gtk.MenuItem.new_with_label("Appearance")
+        appear_menu = Gtk.Menu()
+        theme = get_theme_pref()
+        group = []
+        for label, value in (("Light", "light"), ("Dark", "dark"), ("System", "system")):
+            item = Gtk.RadioMenuItem.new_with_label(group, label)
+            group = item.get_group()
+            item.set_active(theme == value)
+            item.connect("toggled", self._on_theme_pick, value)
+            appear_menu.append(item)
+        appear.set_submenu(appear_menu)
+        self.menu.append(appear)
+
+        quit_item = Gtk.MenuItem.new_with_label("Quit")
+        quit_item.connect("activate", lambda *_: Gtk.main_quit())
+        self.menu.append(quit_item)
+        self.menu.show_all()
+
+        if current:
+            self.ind.set_label(current[:16], "")
+            self.ind.set_title(f"Docked Browser — {current}")
+        else:
+            self.ind.set_label("", "")
+            self.ind.set_title("Docked Browser")
+
+        # Brand tray glyph (menu bars) — not a profile dock icon
+        icon = playing_tray_icon()
+        if icon.is_file():
+            self.ind.set_icon(str(icon))
+        elif LAUNCHER_ICON.is_file():
+            self.ind.set_icon(str(LAUNCHER_ICON))
+
+    def _fill_profile_menu(self, menu: Gtk.Menu, profile: str) -> None:
+        def add(label: str, action: str) -> None:
+            item = Gtk.MenuItem.new_with_label(label)
+
+            def on_activate(_w: Gtk.MenuItem) -> None:
+                token = wayland_activation_token() if action == "activate" else ""
+                run_cli(action, profile, activation_token=token or None)
+                self._rebuild_menu()
+
+            item.connect("activate", on_activate)
+            menu.append(item)
+
+        add("Focus", "activate")
+        add("Pause", "pause")
+        add("Resume", "activate")
+        add("Close", "stop")
+
+    def _on_theme_pick(self, item: Gtk.RadioMenuItem, theme: str) -> None:
+        if not item.get_active():
+            return
+        try:
+            save_prefs({"theme": theme})
+        except ValueError:
+            return
+        # Menu rebuild would steal focus; prefs file is enough for web/modal
+
+    def _install_update(self) -> None:
+        def work() -> None:
+            res = run_cli("build")
+            if res.get("ok"):
+                from chrome_update import check_for_chrome_update
+                check_for_chrome_update(force=True)
+            GLib.idle_add(self._rebuild_menu)
+
+        threading.Thread(target=work, daemon=True).start()
+
+
+def main() -> int:
+    os.environ.setdefault("DISPLAY", ":0")
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    os.environ.setdefault("XDG_RUNTIME_DIR", runtime)
+    if not os.environ.get("WAYLAND_DISPLAY"):
+        sock = os.path.join(runtime, "wayland-0")
+        if os.path.exists(sock):
+            os.environ["WAYLAND_DISPLAY"] = "wayland-0"
+
+    cli = os.path.join(os.path.dirname(GUI_DIR), "bin", "docked-browser")
+    ensure_brand_icons()
+    if os.path.isfile(cli):
+        subprocess.Popen(
+            [cli, "refresh-dock"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+    scheduler = os.path.join(os.path.dirname(cli), "docked-predict-sleep")
+    rust_gui = os.path.join(os.path.dirname(cli), "..", "gui-server", "target", "release", "docked-browser-gui")
+    daemon = None
+    if os.access(rust_gui, os.X_OK) and not os.environ.get("DOCKED_BROWSER_PYTHON_GUI"):
+        try:
+            daemon = subprocess.Popen([scheduler], stdin=subprocess.DEVNULL)
+        except OSError:
+            ensure_daemon()
+    else:
+        ensure_daemon()
+    try:
+        ensure_watcher()
+        Tray()
+        Gtk.main()
+    finally:
+        if daemon is not None and daemon.poll() is None:
+            daemon.terminate()
+            daemon.wait()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

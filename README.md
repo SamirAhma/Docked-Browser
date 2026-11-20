@@ -159,7 +159,7 @@ Naming:
 - Ubuntu 26.04 LTS + GNOME on Wayland (tested)
 - Docker
 - Python 3 + Pillow
-- Optional for modal/tray: GTK 3 + Ayatana AppIndicator
+- Optional for the desktop controls: GTK 3 and Ayatana AppIndicator. After `docked-browser build`, `bin/docked-tray` uses the Rust tray. The focus picker still uses Python.
 - Optional: NVIDIA Container Toolkit
 - Focused Window Shell extension (`focused-window-dbus@flexagoon.com`), patched in place by `bin/docked-browser` for raise / Dash hide / workspace switch
 

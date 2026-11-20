@@ -29,6 +29,7 @@ mod profile_icon;
 mod sleep_state;
 mod sleep_sensors;
 mod scheduler;
+mod tray;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
@@ -1387,6 +1388,13 @@ fn main() {
     let p = PATHS.get_or_init(|| init_paths(root));
     let mut args = std::env::args_os().skip(1);
     let command = args.next();
+    if command.as_deref() == Some(std::ffi::OsStr::new("tray")) {
+        if let Err(error) = tray::run() {
+            eprintln!("Docked Browser tray: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if command.as_deref() == Some(std::ffi::OsStr::new("profile-icon")) {
         let args: Vec<_> = args.collect();
         let [name, color, custom, output] = args.as_slice() else {
