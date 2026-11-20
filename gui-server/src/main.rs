@@ -27,6 +27,7 @@ mod habit;
 mod offload;
 mod profile_icon;
 mod sleep_state;
+mod sleep_sensors;
 mod scheduler;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -418,11 +419,16 @@ fn seed_chrome_fonts(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn cli_status() -> Value {
-    let rows = docker_chrome_status();
+fn active_profile() -> String {
     let active = fs::read_to_string(paths().state_dir.join("active-profile")).unwrap_or_default();
     let active = active.trim();
-    let active = if profile_ok(active) { active } else { "" };
+    if profile_ok(active) { active.to_owned() } else { String::new() }
+}
+
+fn cli_status() -> Value {
+    let rows = docker_chrome_status();
+    let active = active_profile();
+    let active = active.as_str();
     let mut names = known_profiles(&rows);
     names.retain(|name| profile_ok(name));
     names.sort_by_key(|name| name != active);
@@ -1441,6 +1447,10 @@ fn main() {
             eprintln!("Cannot save sleep checkpoint: {error}");
             std::process::exit(1);
         }
+        return;
+    }
+    if command.as_deref() == Some(std::ffi::OsStr::new("sleep-sensors")) {
+        println!("{}", sleep_sensors::snapshot());
         return;
     }
     if command.as_deref() == Some(std::ffi::OsStr::new("predict-daemon")) {

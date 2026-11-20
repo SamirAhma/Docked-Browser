@@ -463,7 +463,7 @@ def system_idle_ms() -> int:
     )
     if out:
         # e.g. (uint64 12345,)
-        m = re.search(r"(\d+)", out)
+        m = re.search(r"(\d+)", out.lstrip("( ").removeprefix("uint64"))
         if m:
             return int(m.group(1))
     out = _run(["xprintidle"])
@@ -1125,6 +1125,28 @@ def set_enabled(enabled: bool) -> dict:
     return status_payload()
 
 
+def _poll_sensors() -> tuple[list[str], int, str, str]:
+    rust = CLI.parent.parent / "gui-server/target/release/docked-browser-gui"
+    if os.access(rust, os.X_OK) and not os.environ.get("DOCKED_BROWSER_PYTHON_GUI"):
+        try:
+            result = subprocess.run(
+                [str(rust), "sleep-sensors"],
+                env={**os.environ, "DOCKED_BROWSER_ROOT": str(CLI.parent.parent)},
+                capture_output=True,
+                text=True,
+                timeout=90,
+                check=True,
+            )
+            snapshot = json.loads(result.stdout)
+            return snapshot["profiles"], snapshot["idle_ms"], snapshot["focused"], snapshot["active"]
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError):
+            pass
+    running = docker_running_profiles()
+    if not running:
+        return [], 0, "", ""
+    return list(running), system_idle_ms(), focused_docked_profile(running), get_active_profile()
+
+
 def tick(bandit: LinUcb | None = None, store: SleepStore | None = None) -> list[str]:
     """One poll cycle. Returns human-readable action lines."""
     bandit = bandit or LinUcb.load_or_default()
@@ -1133,18 +1155,15 @@ def tick(bandit: LinUcb | None = None, store: SleepStore | None = None) -> list[
     if not store.enabled:
         return lines
 
-    running = docker_running_profiles()
+    running, os_idle, focused_name, active = _poll_sensors()
     if not running:
         store.save()
         return lines
 
-    os_idle = system_idle_ms()
-    focused_name = focused_docked_profile(running)
-    active = get_active_profile()
     now = time.time()
     changed = False
 
-    for profile, _meta in running.items():
+    for profile in running:
         st = store.get(profile)
         # Prune wakes
         cutoff = now - FORCED_WAKE_WINDOW_S
