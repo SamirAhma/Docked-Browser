@@ -1,4 +1,4 @@
-//! Resume a paused profile when its window is focused (GNOME Wayland).
+//! Resume a paused profile when its window is focused (GNOME Wayland; Hyprland via its IPC socket).
 //!
 //! Rust port of `gui/wake_paused.py`. Same behaviour, but it talks to the
 //! Focused Window helper over D-Bus and to dockerd over its Unix socket
@@ -20,10 +20,11 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::process::{Command, Stdio};
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -150,8 +151,90 @@ fn tick(state: &mut FocusState, world: &mut impl World) {
     state.profile = cur;
 }
 
+/// Hyprland bare-workspace-switch detection from its event socket.
+///
+/// A bare switch (Super+N, swipe) sends `activewindow`, then `workspace`, and
+/// nothing more. Picking a window on another workspace (launcher, Alt+Tab,
+/// `activate`) sends `activewindow`, `workspace`, then `activewindow` again
+/// within the same moment. A workspace event not followed by another focus
+/// event within `HYPR_PICK_GAP` is a bare switch.
+#[derive(Default)]
+struct HyprSwitch {
+    workspace_at: Option<Instant>,
+    picked: bool,
+    bare_at: Option<Instant>,
+}
+
+const HYPR_PICK_GAP: Duration = Duration::from_millis(80);
+
+impl HyprSwitch {
+    fn on_event(&mut self, line: &str, now: Instant) {
+        let name = line.split(">>").next().unwrap_or_default();
+        match name {
+            "workspace" => {
+                self.workspace_at = Some(now);
+                self.picked = false;
+            }
+            "activewindow" => {
+                if self.workspace_at.is_some_and(|at| now.duration_since(at) <= HYPR_PICK_GAP) {
+                    self.picked = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Seconds since the last bare switch, or None if none has been seen.
+    /// A workspace event younger than `HYPR_PICK_GAP` counts once it settles.
+    fn age(&mut self, now: Instant) -> Option<f64> {
+        if let Some(at) = self.workspace_at {
+            if now.duration_since(at) > HYPR_PICK_GAP {
+                if !self.picked {
+                    self.bare_at = Some(at);
+                }
+                self.workspace_at = None;
+            }
+        }
+        self.bare_at.map(|at| now.duration_since(at).as_secs_f64())
+    }
+
+    /// True while a workspace event is too fresh to classify.
+    fn settling(&self, now: Instant) -> bool {
+        self.workspace_at.is_some_and(|at| now.duration_since(at) <= HYPR_PICK_GAP)
+    }
+}
+
+fn hypr_socket(name: &str) -> Option<PathBuf> {
+    let sig = std::env::var("HYPRLAND_INSTANCE_SIGNATURE").ok().filter(|s| !s.is_empty())?;
+    let runtime = std::env::var("XDG_RUNTIME_DIR")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| format!("/run/user/{}", unsafe_getuid()));
+    Some(Path::new(&runtime).join("hypr").join(sig).join(name))
+}
+
+/// Follow Hyprland's event socket in a thread, reconnecting if it drops.
+fn spawn_hypr_events() -> Option<Arc<Mutex<HyprSwitch>>> {
+    let path = hypr_socket(".socket2.sock")?;
+    let shared = Arc::new(Mutex::new(HyprSwitch::default()));
+    let out = Arc::clone(&shared);
+    std::thread::spawn(move || loop {
+        if let Ok(sock) = UnixStream::connect(&path) {
+            for line in BufReader::new(sock).lines() {
+                let Ok(line) = line else { break };
+                if let Ok(mut sw) = shared.lock() {
+                    sw.on_event(&line, Instant::now());
+                }
+            }
+        }
+        sleep(Duration::from_secs(2));
+    });
+    Some(out)
+}
+
 struct Live {
     dbus: Option<zbus::blocking::Connection>,
+    hypr: Option<Arc<Mutex<HyprSwitch>>>,
     paused_cache: Option<(Instant, HashSet<String>)>,
     last_wake: HashMap<String, Instant>,
     cli: PathBuf,
@@ -201,6 +284,27 @@ impl Live {
             _ => None,
         };
         (text("wm_class").or_else(|| text("wm_class_instance")).unwrap_or_default(), age)
+    }
+
+    /// Focused class from Hyprland's IPC socket, or None when not on Hyprland.
+    fn focus_hyprland() -> Option<String> {
+        let mut sock = UnixStream::connect(hypr_socket(".socket.sock")?).ok()?;
+        sock.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+        sock.set_write_timeout(Some(Duration::from_secs(2))).ok()?;
+        sock.write_all(b"j/activewindow").ok()?;
+        let mut resp = Vec::new();
+        sock.read_to_end(&mut resp).ok()?;
+        Some(hypr_class(&resp))
+    }
+
+    /// Seconds since the last Hyprland bare workspace switch. Waits out a
+    /// workspace event that is still too fresh to tell switch from pick.
+    fn hypr_switch_age(&mut self) -> Option<f64> {
+        let hypr = self.hypr.as_ref()?;
+        if hypr.lock().ok()?.settling(Instant::now()) {
+            sleep(HYPR_PICK_GAP);
+        }
+        hypr.lock().ok()?.age(Instant::now())
     }
 
     /// Leftover X11 focus probe — not a supported product path.
@@ -255,9 +359,15 @@ impl Live {
 
 impl World for Live {
     fn focus(&mut self) -> Focus {
-        let (mut wm, switch_age) = self.focus_from_shell();
+        let (mut wm, mut switch_age) = self.focus_from_shell();
         if wm.is_empty() && switch_age.is_none() {
-            wm = Self::focus_x11();
+            match Self::focus_hyprland() {
+                Some(class) => {
+                    wm = class;
+                    switch_age = self.hypr_switch_age();
+                }
+                None => wm = Self::focus_x11(),
+            }
         }
         Focus { profile: profile_from_wm_class(&wm), switch_age }
     }
@@ -310,6 +420,19 @@ impl World for Live {
     fn log(&mut self, line: &str) {
         self.logger.log(line);
     }
+}
+
+/// Class of the focused window in a `j/activewindow` reply (`{}` = none).
+fn hypr_class(resp: &[u8]) -> String {
+    let Ok(serde_json::Value::Object(info)) = serde_json::from_slice::<serde_json::Value>(resp) else {
+        return String::new();
+    };
+    ["class", "initialClass"]
+        .iter()
+        .filter_map(|k| info.get(*k)?.as_str())
+        .find(|s| !s.is_empty())
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// Wayland half of `control.desktop_env()` (the X11 branch is an unsupported leftover).
@@ -392,6 +515,7 @@ fn main() {
         // One live reading, for checking the D-Bus and Docker paths by hand.
         let mut live = Live {
             dbus: None,
+            hypr: None,
             paused_cache: None,
             last_wake: HashMap::new(),
             cli: find_cli(cli),
@@ -410,13 +534,18 @@ fn main() {
     };
     let mut world = Live {
         dbus: None,
+        hypr: spawn_hypr_events(),
         paused_cache: None,
         last_wake: HashMap::new(),
         cli: find_cli(cli),
         dry_run,
         logger: Logger { path: dir.join(format!("wake-paused{suffix}.log")) },
     };
-    world.logger.log("watching focus (GNOME Focused Window / Dash raise)");
+    world.logger.log(if world.hypr.is_some() {
+        "watching focus (Hyprland events)"
+    } else {
+        "watching focus (GNOME Focused Window / Dash raise)"
+    });
     let mut state = FocusState::default();
     loop {
         tick(&mut state, &mut world);
@@ -462,6 +591,49 @@ mod tests {
             self.world.focus = Focus { profile: profile.into(), switch_age };
             tick(&mut self.state, &mut self.world);
         }
+    }
+
+    #[test]
+    fn hypr_bare_switch_is_reported_after_it_settles() {
+        let t0 = Instant::now();
+        let ms = |n| t0 + Duration::from_millis(n);
+        let mut sw = HyprSwitch::default();
+        assert_eq!(sw.age(t0), None);
+        sw.on_event("activewindow>>docked-browser-Relax,GitHub", ms(0));
+        sw.on_event("workspace>>4", ms(0));
+        sw.on_event("workspacev2>>4,4", ms(0));
+        assert!(sw.settling(ms(10)));
+        let age = sw.age(ms(300)).unwrap();
+        assert!((age - 0.3).abs() < 1e-6);
+        assert!(!sw.settling(ms(300)));
+    }
+
+    #[test]
+    fn hypr_window_pick_on_other_workspace_is_not_a_bare_switch() {
+        let t0 = Instant::now();
+        let ms = |n| t0 + Duration::from_millis(n);
+        let mut sw = HyprSwitch::default();
+        sw.on_event("activewindow>>docked-browser-Relax,GitHub", ms(0));
+        sw.on_event("workspace>>4", ms(0));
+        sw.on_event("activewindow>>docked-browser-Relax,GitHub", ms(1));
+        assert_eq!(sw.age(ms(300)), None);
+        // An earlier bare switch keeps its own age.
+        sw.on_event("workspace>>1", ms(1000));
+        assert!(sw.age(ms(1200)).is_some());
+        sw.on_event("workspace>>4", ms(5000));
+        sw.on_event("activewindow>>docked-browser-Stoc,x", ms(5001));
+        let age = sw.age(ms(5200)).unwrap();
+        assert!((age - 4.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn hypr_focus_change_long_after_switch_is_ignored() {
+        let t0 = Instant::now();
+        let ms = |n| t0 + Duration::from_millis(n);
+        let mut sw = HyprSwitch::default();
+        sw.on_event("workspace>>2", ms(0));
+        sw.on_event("activewindow>>docked-browser-Relax,x", ms(500));
+        assert!(sw.age(ms(600)).is_some());
     }
 
     #[test]
@@ -520,6 +692,9 @@ mod tests {
     #[test]
     fn wm_class_parsing() {
         assert_eq!(profile_from_wm_class("docked-browser-Relax"), "Relax");
+        assert_eq!(hypr_class(br#"{"class":"docked-browser-Relax","pid":5}"#), "docked-browser-Relax");
+        assert_eq!(hypr_class(br#"{"class":"","initialClass":"docked-browser-Stoc"}"#), "docked-browser-Stoc");
+        assert_eq!(hypr_class(b"{}"), "");
         assert_eq!(profile_from_wm_class("WM_CLASS(STRING) = \"x\", \"Docked-Browser-Ham\""), "Ham");
         assert_eq!(profile_from_wm_class("org.gnome.Ptyxis"), "");
         assert_eq!(profile_from_wm_class("docked-browser-"), "");

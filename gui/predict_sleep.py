@@ -507,6 +507,18 @@ def _focused_window_from_shell() -> dict | None:
     return _parse_focused_payload(out) if out else None
 
 
+def _focused_window_hyprland() -> dict | None:
+    """Focused window from ``hyprctl activewindow -j`` (``{}`` = none), or None off Hyprland."""
+    if not os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+        return None
+    out = _run(["hyprctl", "activewindow", "-j"], timeout=2.0)
+    try:
+        data = json.loads(out) if out else None
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _focused_window_x11() -> tuple[int, str]:
     wid = _run(["xdotool", "getactivewindow"])
     if not wid.isdigit():
@@ -529,6 +541,14 @@ def _window_pid_and_class() -> tuple[int, str]:
             return 0, wm
         if pid > 0:
             return pid, wm
+    hypr = _focused_window_hyprland()
+    if hypr is not None:
+        wm = str(hypr.get("class") or hypr.get("initialClass") or "").lower()
+        try:
+            pid = int(hypr.get("pid") or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        return max(pid, 0), wm
     return _focused_window_x11()
 
 

@@ -232,6 +232,7 @@ dash_helper_ready() {
 
 ensure_window_focus_helper() {
   [[ -f "$FOCUS_HELPER" ]] || return 0
+  [[ "$(desktop_kind)" == "gnome" ]] || return 0
   if ! grep -q 'docked-browser-focus' "$FOCUS_HELPER"; then
   python3 - "$FOCUS_HELPER" <<'PY'
 import pathlib, sys
@@ -765,6 +766,8 @@ set_dash_hidden() {
 sync_paused_dash() {
   local saved_name="${PROFILE_NAME:-}" name status
   [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" || -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus" ]] || return 0
+  # Only GNOME has a Dash to hide paused profiles from.
+  [[ "$(desktop_kind)" == "gnome" ]] || return 0
   ensure_window_focus_helper
   # GNOME imports an extension once per login, so SetDashHidden appears
   # only after the next login. Until then, leave the Dash alone.
@@ -802,6 +805,75 @@ session_is_gnome() {
     *[Gg][Nn][Oo][Mm][Ee]*|*[Uu]buntu*) return 0 ;;
   esac
   return 1
+}
+
+# Hyprland needs HYPRLAND_INSTANCE_SIGNATURE for hyprctl. A CLI started
+# without the login env (cron, docker exec, ssh) borrows the newest instance.
+ensure_hyprland_env() {
+  [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]] && return 0
+  case "${XDG_CURRENT_DESKTOP:-}" in *[Hh]yprland*) ;; *) return 1 ;; esac
+  local runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" dir
+  dir="$(ls -1td "$runtime"/hypr/*/ 2>/dev/null | head -n 1)"
+  [[ -n "$dir" && -S "${dir}.socket.sock" ]] || return 1
+  dir="${dir%/}"
+  export HYPRLAND_INSTANCE_SIGNATURE="${dir##*/}"
+}
+
+# gnome | hyprland | other. Hyprland and GNOME each get their own raise and
+# workspace path; "other" keeps the untested X11 leftovers.
+desktop_kind() {
+  if command -v hyprctl >/dev/null 2>&1 && ensure_hyprland_env; then
+    echo hyprland
+  elif session_is_gnome; then
+    echo gnome
+  else
+    echo other
+  fi
+}
+
+# Run a Hyprland dispatcher. Hyprland 0.55+ with a Lua config takes
+# hl.dsp.* expressions; older ones take the classic "name args" form.
+hypr_dispatch() {
+  local lua="$1" legacy="$2" out
+  out="$(hyprctl dispatch "$lua" 2>&1)" || true
+  [[ "$out" == "ok" ]] && return 0
+  [[ "$out" == *"not found"* ]] && return 1
+  # shellcheck disable=SC2086
+  out="$(hyprctl dispatch $legacy 2>&1)" || true
+  [[ "$out" == "ok" ]]
+}
+
+hypr_window_exists() {
+  hyprctl clients -j 2>/dev/null | python3 -c '
+import json, sys
+want = sys.argv[1].lower()
+try:
+    rows = json.load(sys.stdin)
+except ValueError:
+    raise SystemExit(1)
+raise SystemExit(0 if any(str(r.get("class") or r.get("initialClass") or "").lower() == want for r in rows) else 1)
+' "$1"
+}
+
+# Hyprland half of _focus_profile_class: move to the workspace listed in
+# workspaces.json (like GNOME OpenWorkspace), then focus by class.
+# Returns 1 while Chrome has not mapped the window yet.
+hypr_focus_profile_class() {
+  local class_name="$1" number selector
+  hypr_window_exists "$class_name" || return 1
+  selector="class:^(${class_name})\$"
+  if [[ "${DOCKED_SKIP_WORKSPACE:-}" != "1" && -n "${PROFILE_NAME:-}" ]]; then
+    number="$(assigned_workspace_number)" || true
+    if [[ "$number" =~ ^[1-9][0-9]*$ ]]; then
+      hypr_dispatch \
+        "hl.dsp.window.move({ workspace = \"${number}\", follow = true, window = \"${selector}\" })" \
+        "movetoworkspace ${number},${selector}" || true
+    fi
+  fi
+  hypr_dispatch \
+    "hl.dsp.focus({ window = \"${selector}\" })" \
+    "focuswindow ${selector}" || true
+  return 0
 }
 
 # Print the 1-based workspace number for PROFILE_NAME, or nothing.
@@ -878,6 +950,10 @@ open_profile_workspace() {
 _focus_profile_class() {
   local class_name="$1"
   ensure_session_env
+  if [[ "$(desktop_kind)" == "hyprland" ]]; then
+    hypr_focus_profile_class "$class_name"
+    return
+  fi
   # GNOME Wayland: MetaWindow pid does not match the container, so raise by class.
   if ! session_wants_x11 && [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
     open_profile_workspace "$class_name" || true

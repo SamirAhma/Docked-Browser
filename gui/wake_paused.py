@@ -25,8 +25,10 @@ import fcntl
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -125,6 +127,18 @@ def _focused_from_shell() -> tuple[str, float | None]:
     return str(info.get("wm_class") or info.get("wm_class_instance") or ""), age
 
 
+def _focused_window_hyprland() -> dict | None:
+    """Focused window from ``hyprctl activewindow -j`` (``{}`` = none), or None off Hyprland."""
+    if not os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+        return None
+    out = _run(["hyprctl", "activewindow", "-j"], timeout=2.0)
+    try:
+        data = json.loads(out) if out else None
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _focused_wm_class_x11() -> str:
     """Leftover X11 focus probe — not a supported product path."""
     wid = _run(["xdotool", "getactivewindow"])
@@ -133,11 +147,100 @@ def _focused_wm_class_x11() -> str:
     return _run(["xprop", "-id", wid, "WM_CLASS"])
 
 
+HYPR_PICK_GAP_S = 0.08
+
+
+class HyprSwitch:
+    """Hyprland bare-workspace-switch detection from its event socket.
+
+    A bare switch (Super+N, swipe) sends ``activewindow``, ``workspace``, and
+    nothing more. Picking a window on another workspace sends ``activewindow``,
+    ``workspace``, then ``activewindow`` again within the same moment.
+    Same rules as ``HyprSwitch`` in wake-paused/src/main.rs.
+    """
+
+    def __init__(self) -> None:
+        self.workspace_at: float | None = None
+        self.picked = False
+        self.bare_at: float | None = None
+        self.lock = threading.Lock()
+
+    def on_event(self, line: str, now: float) -> None:
+        name = line.split(">>", 1)[0]
+        if name == "workspace":
+            self.workspace_at = now
+            self.picked = False
+        elif name == "activewindow":
+            if self.workspace_at is not None and now - self.workspace_at <= HYPR_PICK_GAP_S:
+                self.picked = True
+
+    def age(self, now: float) -> float | None:
+        if self.workspace_at is not None and now - self.workspace_at > HYPR_PICK_GAP_S:
+            if not self.picked:
+                self.bare_at = self.workspace_at
+            self.workspace_at = None
+        return None if self.bare_at is None else now - self.bare_at
+
+    def settling(self, now: float) -> bool:
+        return self.workspace_at is not None and now - self.workspace_at <= HYPR_PICK_GAP_S
+
+
+_hypr_switch: HyprSwitch | None = None
+
+
+def _hypr_socket(name: str) -> str | None:
+    sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+    if not sig:
+        return None
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    return os.path.join(runtime, "hypr", sig, name)
+
+
+def _start_hypr_events() -> HyprSwitch | None:
+    """Follow Hyprland's event socket in a daemon thread, reconnecting if it drops."""
+    path = _hypr_socket(".socket2.sock")
+    if path is None:
+        return None
+    tracker = HyprSwitch()
+
+    def follow() -> None:
+        while True:
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                    sock.connect(path)
+                    for raw in sock.makefile("rb"):
+                        with tracker.lock:
+                            tracker.on_event(raw.decode("utf-8", "replace").strip(), time.monotonic())
+            except OSError:
+                pass
+            time.sleep(2.0)
+
+    threading.Thread(target=follow, name="hypr-events", daemon=True).start()
+    return tracker
+
+
+def _hypr_switch_age() -> float | None:
+    tracker = _hypr_switch
+    if tracker is None:
+        return None
+    with tracker.lock:
+        fresh = tracker.settling(time.monotonic())
+    if fresh:
+        time.sleep(HYPR_PICK_GAP_S)
+    with tracker.lock:
+        return tracker.age(time.monotonic())
+
+
 def focused_docked_profile() -> tuple[str, float | None]:
     """(focused docked-browser profile or '', seconds since last bare switch)."""
     wm, age = _focused_from_shell()
     if not wm and age is None:
-        wm = _focused_wm_class_x11()
+        hypr = _focused_window_hyprland()
+        if hypr is not None:
+            wm = str(hypr.get("class") or hypr.get("initialClass") or "")
+            age = _hypr_switch_age()
+        else:
+            wm = _focused_wm_class_x11()
     return profile_from_wm_class(wm), age
 
 
@@ -235,7 +338,12 @@ def tick(state: FocusState) -> None:
 
 
 def watch() -> None:
-    _log("watching focus (GNOME Focused Window / Dash raise)")
+    global _hypr_switch
+    _hypr_switch = _start_hypr_events()
+    if _hypr_switch is not None:
+        _log("watching focus (Hyprland events)")
+    else:
+        _log("watching focus (GNOME Focused Window / Dash raise)")
     state = FocusState()
     while True:
         try:

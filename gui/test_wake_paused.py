@@ -69,5 +69,38 @@ class WakeOnFocusTest(unittest.TestCase):
         self.assertEqual(self.woken, [])
 
 
+
+
+class HyprSwitchTest(unittest.TestCase):
+    """Same cases as the HyprSwitch tests in wake-paused/src/main.rs."""
+
+    def test_bare_switch_is_reported_after_it_settles(self) -> None:
+        sw = wake_paused.HyprSwitch()
+        self.assertIsNone(sw.age(0.0))
+        sw.on_event("activewindow>>docked-browser-Relax,GitHub", 0.0)
+        sw.on_event("workspace>>4", 0.0)
+        sw.on_event("workspacev2>>4,4", 0.0)
+        self.assertTrue(sw.settling(0.01))
+        self.assertAlmostEqual(sw.age(0.3), 0.3)
+        self.assertFalse(sw.settling(0.3))
+
+    def test_window_pick_on_other_workspace_is_not_a_bare_switch(self) -> None:
+        sw = wake_paused.HyprSwitch()
+        sw.on_event("activewindow>>docked-browser-Relax,GitHub", 0.0)
+        sw.on_event("workspace>>4", 0.0)
+        sw.on_event("activewindow>>docked-browser-Relax,GitHub", 0.001)
+        self.assertIsNone(sw.age(0.3))
+        sw.on_event("workspace>>1", 1.0)
+        self.assertIsNotNone(sw.age(1.2))
+        sw.on_event("workspace>>4", 5.0)
+        sw.on_event("activewindow>>docked-browser-Stoc,x", 5.001)
+        self.assertAlmostEqual(sw.age(5.2), 4.2)
+
+    def test_focus_change_long_after_switch_is_ignored(self) -> None:
+        sw = wake_paused.HyprSwitch()
+        sw.on_event("workspace>>2", 0.0)
+        sw.on_event("activewindow>>docked-browser-Relax,x", 0.5)
+        self.assertIsNotNone(sw.age(0.6))
+
 if __name__ == "__main__":
     unittest.main()

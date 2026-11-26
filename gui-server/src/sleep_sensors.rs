@@ -58,6 +58,27 @@ fn shell_focus(reply: &str) -> Option<(i64, String)> {
     Some((pid, class))
 }
 
+/// `hyprctl activewindow -j` reply. `{}` means nothing is focused.
+fn hypr_focus(reply: &str) -> Option<(i64, String)> {
+    let data: Value = serde_json::from_str(reply.trim()).ok()?;
+    let data = data.as_object()?;
+    if data.is_empty() {
+        return Some((0, String::new()));
+    }
+    let class = ["class", "initialClass"]
+        .into_iter()
+        .filter_map(|key| data.get(key)?.as_str())
+        .find(|value| !value.is_empty())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let pid = data.get("pid").and_then(py_int).unwrap_or(0).max(0);
+    Some((pid, class))
+}
+
+fn hyprland_session() -> bool {
+    std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some_and(|sig| !sig.is_empty())
+}
+
 fn focused_window() -> Option<(i64, String)> {
     let shell = output(
         &[
@@ -75,6 +96,11 @@ fn focused_window() -> Option<(i64, String)> {
     );
     if let Some(focus) = shell.as_deref().and_then(shell_focus) {
         return Some(focus);
+    }
+    if hyprland_session() {
+        return output(&["hyprctl", "activewindow", "-j"], 2)
+            .as_deref()
+            .and_then(hypr_focus);
     }
     let window = output(&["xdotool", "getactivewindow"], 3)?;
     window.parse::<u64>().ok()?;
@@ -149,6 +175,20 @@ mod tests {
             Some((0, String::new()))
         );
         assert_eq!(shell_focus("('{\"pid\":\"unknown\"}',)"), None);
+    }
+
+    #[test]
+    fn hypr_focus_reads_class_and_pid() {
+        assert_eq!(
+            hypr_focus("{\"class\":\"docked-browser-Relax\",\"pid\":51293}"),
+            Some((51293, "docked-browser-relax".into()))
+        );
+        assert_eq!(
+            hypr_focus("{\"class\":\"\",\"initialClass\":\"Chrome\",\"pid\":9}"),
+            Some((9, "chrome".into()))
+        );
+        assert_eq!(hypr_focus("{}"), Some((0, String::new())));
+        assert_eq!(hypr_focus("invalid"), None);
     }
 }
 
