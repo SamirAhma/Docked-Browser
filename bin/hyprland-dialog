@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Hyprland "Application Not Responding" filter for Docked Browser.
+#
+# A paused profile (docker pause) cannot answer Hyprland's pings, so Hyprland
+# runs `hyprland-dialog` offering Terminate / Wait. Terminate would SIGKILL
+# that profile's Chrome. When the dialog names a docked-browser-<profile>
+# window whose container is paused, answer "Wait" without showing anything.
+# Every other dialog (other apps, a running profile that really hangs) goes
+# to the real hyprland-dialog unchanged.
+#
+# Installed by bin/install-anr-filter as /usr/local/bin/hyprland-dialog,
+# which comes before /usr/bin on Hyprland's PATH.
+
+REAL=/usr/bin/hyprland-dialog
+
+title="" text=""
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+  case "${args[i]}" in
+    --title) title="${args[i + 1]:-}" ;;
+    --text) text="${args[i + 1]:-}" ;;
+  esac
+done
+
+if [[ "$title" == "Application Not Responding" && "$text" =~ docked-browser-([A-Za-z0-9_-]{1,64}) ]]; then
+  profile="${BASH_REMATCH[1]}"
+  status="$(timeout 3 docker inspect -f '{{.State.Status}}' "chrome-${profile}" 2>/dev/null || true)"
+  if [[ "$status" == "paused" ]]; then
+    log="${XDG_DATA_HOME:-$HOME/.local/share}/docked-browser/anr-filter.log"
+    { mkdir -p "${log%/*}" && printf '[%(%F %T)T] answered Wait for paused %s\n' -1 "$profile" >>"$log"; } 2>/dev/null || true
+    echo "Wait"
+    exit 0
+  fi
+fi
+
+exec "$REAL" "$@"

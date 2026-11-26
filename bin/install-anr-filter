@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Link bin/hyprland-dialog as /usr/local/bin/hyprland-dialog (Hyprland only),
+# so paused profiles no longer trigger "Application Not Responding".
+# `install-anr-filter --remove` takes the link away again.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TARGET=/usr/local/bin/hyprland-dialog
+SOURCE="$HERE/hyprland-dialog"
+
+as_root() {
+  if [[ $EUID -eq 0 ]]; then "$@"; elif [[ -t 0 ]]; then sudo "$@"; else pkexec "$@"; fi
+}
+
+if [[ "${1:-}" == "--remove" ]]; then
+  if [[ -L "$TARGET" && "$(readlink "$TARGET")" == "$SOURCE" ]]; then
+    as_root rm -f "$TARGET"
+    echo "Removed $TARGET"
+  else
+    echo "$TARGET is not this filter; left alone."
+  fi
+  exit 0
+fi
+
+if [[ ! -x /usr/bin/hyprland-dialog ]]; then
+  echo "No /usr/bin/hyprland-dialog (hyprland-guiutils); nothing to filter."
+  exit 0
+fi
+if [[ -e "$TARGET" && ! -L "$TARGET" ]]; then
+  echo "$TARGET exists and is not a link; not replacing it." >&2
+  exit 1
+fi
+chmod +x "$SOURCE"
+as_root ln -sfn "$SOURCE" "$TARGET"
+echo "Linked $TARGET -> $SOURCE"
